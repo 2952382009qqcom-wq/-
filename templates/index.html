@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>明鉴 · 法律文书智能助手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css?v=20260527auth2">
+</head>
+<body>
+
+<!-- 顶部状态栏 -->
+<header class="app-header">
+  <div class="header-brand">
+    <span class="brand-mark">&#x2696;</span>
+    <div class="brand-text">
+      <h1 class="brand-name">明鉴</h1>
+      <span class="brand-tagline">法律文书智能助手</span>
+    </div>
+  </div>
+  <div class="header-status">
+    <!-- 管理员：AI 状态 -->
+    <span id="admin-status-group" style="display:none">
+      <span class="status-pulse" id="status-pulse"></span>
+      <span id="api-status-label">演示模式</span>
+    </span>
+    <!-- 管理员按钮 -->
+    <button id="btn-admin-panel" style="display:none" class="config-gear" onclick="toggleAdminPanel()" title="管理员面板">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+    </button>
+    <button id="btn-config-gear" style="display:none" class="config-gear" onclick="toggleConfig()" title="API 设置">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+    </button>
+    <!-- 普通用户：审批入口（3 态：申请 / 审核中 / 已通过） -->
+    <span id="approval-hint" class="hidden">
+      <button id="btn-request-approval" class="btn-approval-header" onclick="requestApproval()">申请 API 使用权限</button>
+      <span id="approval-pending-text" class="approval-hint-text hidden">正在审核中</span>
+      <span id="approval-done-text" class="approval-hint-text hidden">审核已通过</span>
+    </span>
+    <!-- 用户名 -->
+    <span id="header-user" class="header-user hidden">
+      <span id="header-username"></span>
+      <button class="btn-history" onclick="toggleHistoryPanel()" title="历史记录">历史</button>
+      <button class="btn-logout" onclick="doLogout()" title="退出登录">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </span>
+  </div>
+</header>
+
+<!-- API 配置面板 -->
+<div id="config-overlay" class="config-overlay hidden" onclick="toggleConfig()"></div>
+<div id="config-panel" class="config-panel hidden">
+  <h3>LLM API 配置</h3>
+  <p class="config-hint">支持 DeepSeek / 通义千问 / GLM / Kimi 等兼容接口</p>
+  <div id="cfg-current" class="config-current">当前配置：加载中</div>
+  <div class="config-group">
+    <label>API Key</label>
+    <input type="password" id="cfg-key" placeholder="sk-...">
+  </div>
+  <div class="config-group">
+    <label>Base URL</label>
+    <select id="cfg-url" class="select-field" onchange="syncProviderModels()">
+      <option value="https://api.deepseek.com/v1">DeepSeek</option>
+      <option value="https://dashscope.aliyuncs.com/compatible-mode/v1">通义千问</option>
+      <option value="https://open.bigmodel.cn/api/paas/v4">GLM 智谱</option>
+      <option value="https://api.moonshot.cn/v1">Kimi</option>
+    </select>
+    <a id="cfg-provider-link" class="config-doc-link" href="https://api-docs.deepseek.com/" target="_blank" rel="noreferrer">获取 API Key</a>
+  </div>
+  <div class="config-group">
+    <label>默认模型</label>
+    <select id="cfg-model" class="select-field">
+      <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+      <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+    </select>
+  </div>
+  <div class="config-actions">
+    <button class="btn-accent" onclick="saveConfig()">保存配置</button>
+    <button class="btn-secondary compact" onclick="testConfig()">测试连接</button>
+  </div>
+  <span id="config-msg"></span>
+</div>
+
+<!-- 管理员面板 -->
+<div id="admin-overlay" class="config-overlay hidden" onclick="toggleAdminPanel()"></div>
+<div id="admin-panel" class="config-panel hidden" style="width:620px;">
+  <h3>管理员面板</h3>
+  <div id="admin-content">
+    <p style="color:var(--text-muted);font-size:13px;">加载中...</p>
+  </div>
+</div>
+
+<!-- 历史记录面板 -->
+<div id="history-overlay" class="config-overlay hidden" onclick="toggleHistoryPanel()"></div>
+<div id="history-panel" class="config-panel hidden" style="width:640px;">
+  <h3>历史记录</h3>
+  <p class="config-hint">查看最近的分析、检索和生成记录</p>
+  <div id="history-content">
+    <p style="color:var(--text-muted);font-size:13px;">加载中...</p>
+  </div>
+</div>
+
+<!-- 主布局 -->
+<div class="app-body">
+
+  <!-- 左侧导航 -->
+  <nav class="sidebar">
+    <div class="nav-group">
+      <button class="nav-item active" data-module="analyze">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </span>
+        <span class="nav-label">文书分析</span>
+      </button>
+      <button class="nav-item" data-module="search">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <span class="nav-label">法规检索</span>
+      </button>
+      <button class="nav-item" data-module="review">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </span>
+        <span class="nav-label">合同审查</span>
+      </button>
+      <button class="nav-item" data-module="generate">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        </span>
+        <span class="nav-label">文书生成</span>
+      </button>
+      <button class="nav-item" data-module="strategy">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
+        </span>
+        <span class="nav-label">策略分析</span>
+      </button>
+      <button class="nav-item" data-module="student">
+        <span class="nav-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/><path d="M22 10v6"/></svg>
+        </span>
+        <span class="nav-label">学生法律</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- 内容区 -->
+  <main class="content">
+
+    <!-- 模块1: 文书分析 -->
+    <section id="module-analyze" class="module active">
+      <div class="module-hero">
+        <h2 class="module-title">法律文书智能分析</h2>
+        <p class="module-sub">上传法律文书或粘贴文本，AI 自动识别文档类型、提取关键条款、标记潜在风险</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('analyze')">填入示例</button>
+        </div>
+        <div class="tab-row">
+          <button class="tab active" onclick="switchTab('analyze', 'paste')">粘贴文本</button>
+          <button class="tab" onclick="switchTab('analyze', 'upload')">上传文件</button>
+        </div>
+        <div id="analyze-paste" class="tab-pane active">
+          <textarea id="analyze-text" placeholder="在此粘贴法律文书内容…&#10;&#10;支持：判决书、合同、起诉状、律师函等" rows="12"></textarea>
+        </div>
+        <div id="analyze-upload" class="tab-pane hidden">
+          <div class="drop-zone" id="analyze-drop-zone">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span>点击上传或拖拽文件</span>
+            <em>TXT / PDF / DOCX</em>
+            <input type="file" id="analyze-file" accept=".txt,.pdf,.docx" style="display:none" onchange="onFileSelected('analyze-file', 'analyze-file-name')">
+          </div>
+          <span id="analyze-file-name" class="file-badge hidden"></span>
+        </div>
+        <button class="btn-primary" onclick="submitAnalyze()">
+          <span>开始分析</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="analyze-result" class="result-container hidden"></div>
+    </section>
+
+    <!-- 模块2: 法规检索 -->
+    <section id="module-search" class="module hidden">
+      <div class="module-hero">
+        <h2 class="module-title">法律法规智能检索</h2>
+        <p class="module-sub">用自然语言描述法律问题，精准检索相关法条原文与权威解读</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('search')">填入示例</button>
+        </div>
+        <div class="search-box">
+          <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="search-question" placeholder="例如：劳动合同中约定加班费已包含在工资中是否合法？" class="search-input">
+        </div>
+        <button class="btn-primary" onclick="submitSearch()">
+          <span>检索法规</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="search-result" class="result-container hidden"></div>
+    </section>
+
+    <!-- 模块3: 合同审查 -->
+    <section id="module-review" class="module hidden">
+      <div class="module-hero">
+        <h2 class="module-title">合同风险智能审查</h2>
+        <p class="module-sub">上传合同或粘贴文本，全面筛查不平等条款、法律风险与缺失要件</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('review')">填入示例</button>
+        </div>
+        <div class="tab-row">
+          <button class="tab active" onclick="switchTab('review', 'paste')">粘贴文本</button>
+          <button class="tab" onclick="switchTab('review', 'upload')">上传文件</button>
+        </div>
+        <div id="review-paste" class="tab-pane active">
+          <textarea id="review-text" placeholder="在此粘贴合同内容…" rows="12"></textarea>
+        </div>
+        <div id="review-upload" class="tab-pane hidden">
+          <div class="drop-zone" id="review-drop-zone">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span>点击上传或拖拽合同文件</span>
+            <em>TXT / PDF / DOCX</em>
+            <input type="file" id="review-file" accept=".txt,.pdf,.docx" style="display:none" onchange="onFileSelected('review-file', 'review-file-name')">
+          </div>
+          <span id="review-file-name" class="file-badge hidden"></span>
+        </div>
+        <button class="btn-primary" onclick="submitReview()">
+          <span>开始审查</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="review-result" class="result-container hidden"></div>
+    </section>
+
+    <!-- 模块4: 文书生成 -->
+    <section id="module-generate" class="module hidden">
+      <div class="module-hero">
+        <h2 class="module-title">法律文书智能生成</h2>
+        <p class="module-sub">选择文书类型、描述案情，AI 自动生成规范的法律文书草稿</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('generate')">填入示例</button>
+        </div>
+        <div class="field-row">
+          <label class="field-label">文书类型</label>
+          <select id="gen-doc-type" class="select-field" onchange="onGenerateDocTypeChange()">
+            <option value="起诉状">起诉状</option>
+            <option value="上诉状">上诉状</option>
+            <option value="答辩状">答辩状</option>
+            <option value="申请执行书">申请执行书</option>
+            <option value="反诉状">反诉状</option>
+            <option value="管辖权异议书">管辖权异议书</option>
+            <option value="司法确认申请书">司法确认申请书</option>
+            <option value="公民授权委托书">公民授权委托书</option>
+            <option value="合同">合同</option>
+          </select>
+        </div>
+        <div id="contract-selected-bar" class="contract-selected-bar hidden">
+          <span>当前合同：<strong id="contract-selected-name">买卖合同</strong></span>
+          <button type="button" class="btn-secondary contract-change-btn" onclick="openContractPicker()">更换</button>
+        </div>
+        <div id="complaint-form" class="complaint-form-grid">
+          <div class="field-row full">
+            <label class="field-label">原告</label>
+            <input type="text" id="gen-plaintiff" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">住所</label>
+            <input type="text" id="gen-plaintiff-address" placeholder="……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代表人/主要负责人</label>
+            <input type="text" id="gen-legal-representative" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">职务</label>
+            <input type="text" id="gen-representative-duty" placeholder="董事长 / 总经理 / 负责人" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="gen-representative-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="gen-agent" placeholder="×××，律师/员工等" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">被告</label>
+            <input type="text" id="gen-defendant" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">被告基本信息</label>
+            <textarea id="gen-defendant-info" placeholder="姓名、性别、工作单位、住所等；或名称、住所等" rows="2"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">诉讼请求</label>
+            <textarea id="gen-claims" placeholder="逐项填写诉讼请求，可换行或用分号分隔" rows="4"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">事实和理由</label>
+            <textarea id="gen-facts-reasons" placeholder="写明事实经过、法律依据和请求理由" rows="5"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">证据和证据来源，证人姓名和住所</label>
+            <textarea id="gen-evidence" placeholder="列明证据名称、来源、证明目的；有证人的写明姓名和住所" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="gen-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">副本份数</label>
+            <input type="text" id="gen-copy-count" placeholder="×" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">起诉人</label>
+            <input type="text" id="gen-suer" placeholder="起诉人名称" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="gen-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="appeal-form" class="complaint-form-grid hidden">
+          <div class="field-row full">
+            <label class="field-label">上诉人(原审诉讼地位)</label>
+            <input type="text" id="appeal-appellant" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">上诉人基本信息</label>
+            <textarea id="appeal-appellant-info" placeholder="男/女，出生日期，民族，工作单位和职务或者职业，住……" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="appeal-appellant-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代理人/指定代理人</label>
+            <input type="text" id="appeal-legal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="appeal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">被上诉人(原审诉讼地位)</label>
+            <input type="text" id="appeal-appellee" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">被上诉人基本信息</label>
+            <textarea id="appeal-appellee-info" placeholder="姓名/名称、住所、联系方式等" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">案由当事人</label>
+            <input type="text" id="appeal-case-parties" placeholder="×××因与×××" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">案由</label>
+            <input type="text" id="appeal-cause" placeholder="……(写明案由)" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">原审人民法院</label>
+            <input type="text" id="appeal-original-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">原审裁判日期</label>
+            <input type="text" id="appeal-judgment-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">原审裁判文号</label>
+            <input type="text" id="appeal-case-number" placeholder="(××××)……号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">裁判类型</label>
+            <input type="text" id="appeal-judgment-type" placeholder="民事判决 / 民事裁定" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">上诉请求</label>
+            <textarea id="appeal-requests" placeholder="逐项填写上诉请求，可换行或用分号分隔" rows="4"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">上诉理由</label>
+            <textarea id="appeal-reasons" placeholder="写明不服原审裁判的事实和理由" rows="5"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="appeal-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">副本份数</label>
+            <input type="text" id="appeal-copy-count" placeholder="×" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="appeal-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="defense-form" class="complaint-form-grid hidden">
+          <div class="field-row full">
+            <label class="field-label">答辩人</label>
+            <input type="text" id="defense-respondent" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">答辩人基本信息</label>
+            <textarea id="defense-respondent-info" placeholder="男/女，出生日期，民族，工作单位和职务或职业，住……" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="defense-respondent-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代理人/指定代理人</label>
+            <input type="text" id="defense-legal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="defense-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">受理人民法院</label>
+            <input type="text" id="defense-original-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">案号</label>
+            <input type="text" id="defense-case-number" placeholder="(××××)……民初……号" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">当事人和案由</label>
+            <textarea id="defense-case-summary" placeholder="……(写明当事人和案由)" rows="2"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">答辩意见</label>
+            <textarea id="defense-opinion" placeholder="写明答辩意见，可换行或用分号分隔" rows="5"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">证据和证据来源，证人姓名和住所</label>
+            <textarea id="defense-evidence" placeholder="列明证据名称、来源、证明目的；有证人的写明姓名和住所" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="defense-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">副本份数</label>
+            <input type="text" id="defense-copy-count" placeholder="×" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="defense-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="execution-form" class="complaint-form-grid hidden">
+          <div class="field-row full">
+            <label class="field-label">申请执行人</label>
+            <input type="text" id="execution-applicant" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">申请执行人基本信息</label>
+            <textarea id="execution-applicant-info" placeholder="男/女，出生日期，民族，工作单位和职务或者职业，住……" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="execution-applicant-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代理人/指定代理人</label>
+            <input type="text" id="execution-legal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="execution-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">被执行人</label>
+            <input type="text" id="execution-respondent" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">被执行人基本信息</label>
+            <textarea id="execution-respondent-info" placeholder="姓名/名称、住所、联系方式等" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">执行案件当事人</label>
+            <input type="text" id="execution-case-parties" placeholder="申请执行人×××与被执行人×××" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">案由</label>
+            <input type="text" id="execution-cause" placeholder="……(写明案由)" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">生效法律文书作出机关</label>
+            <input type="text" id="execution-instrument-maker" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">生效法律文书文号</label>
+            <input type="text" id="execution-instrument-number" placeholder="(××××)……号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">生效法律文书类型</label>
+            <input type="text" id="execution-instrument-type" placeholder="民事判决 / 调解书等" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">未履行义务人</label>
+            <input type="text" id="execution-obligor" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">请求事项</label>
+            <textarea id="execution-requests" placeholder="写明请求执行的内容，可换行或用分号分隔" rows="4"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="execution-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">生效法律文书份数</label>
+            <input type="text" id="execution-attachment-count" placeholder="×" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="execution-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="counterclaim-form" class="complaint-form-grid hidden">
+          <div class="field-row full">
+            <label class="field-label">反诉原告(本诉被告)</label>
+            <input type="text" id="counterclaim-plaintiff" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">反诉原告基本信息</label>
+            <textarea id="counterclaim-plaintiff-info" placeholder="男/女，出生日期，民族，工作单位和职务或职业，住……" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="counterclaim-plaintiff-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代理人/指定代理人</label>
+            <input type="text" id="counterclaim-legal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="counterclaim-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">反诉被告(本诉原告)</label>
+            <input type="text" id="counterclaim-defendant" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">反诉被告基本信息</label>
+            <textarea id="counterclaim-defendant-info" placeholder="姓名/名称、住所、联系方式等" rows="2"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">反诉请求</label>
+            <textarea id="counterclaim-requests" placeholder="逐项填写反诉请求，可换行或用分号分隔" rows="4"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">事实和理由</label>
+            <textarea id="counterclaim-facts-reasons" placeholder="写明事实经过、法律依据和反诉理由" rows="5"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">证据和证据来源，证人姓名和住所</label>
+            <textarea id="counterclaim-evidence" placeholder="列明证据名称、来源、证明目的；有证人的写明姓名和住所" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="counterclaim-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">副本份数</label>
+            <input type="text" id="counterclaim-copy-count" placeholder="×" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="counterclaim-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="jurisdiction-form" class="complaint-form-grid hidden">
+          <div class="field-row full">
+            <label class="field-label">异议人(被告)</label>
+            <input type="text" id="jurisdiction-objector" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">异议人基本信息</label>
+            <textarea id="jurisdiction-objector-info" placeholder="男/女，出生日期，民族，工作单位和职务或者职业，住……" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">联系方式</label>
+            <input type="text" id="jurisdiction-objector-contact" placeholder="手机号或固定电话" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">法定代理人/指定代理人</label>
+            <input type="text" id="jurisdiction-legal-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托诉讼代理人</label>
+            <input type="text" id="jurisdiction-agent" placeholder="×××，……" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">原受理人民法院</label>
+            <input type="text" id="jurisdiction-original-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">案号</label>
+            <input type="text" id="jurisdiction-case-number" placeholder="(××××)……号" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">案件当事人和案由</label>
+            <textarea id="jurisdiction-case-summary" placeholder="……(写明案件当事人和案由)" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">移送人民法院</label>
+            <input type="text" id="jurisdiction-transfer-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">事实和理由</label>
+            <textarea id="jurisdiction-facts-reasons" placeholder="写明提出管辖权异议的事实和理由" rows="5"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="jurisdiction-court" placeholder="××××人民法院" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="jurisdiction-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="judicial-confirmation-form" class="complaint-form-grid hidden">
+          <div class="field-row">
+            <label class="field-label">自然人申请人</label>
+            <input type="text" id="confirm-applicant-person" placeholder="{姓名}" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">自然人申请人基本信息</label>
+            <textarea id="confirm-applicant-person-info" placeholder="性别、出生日期、民族、证件信息、工作单位、职业、住所、联系方式" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">自然人代理人一</label>
+            <input type="text" id="confirm-person-agent-1" placeholder="姓名，律所：律所名称。联系方式：手机号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">自然人代理人二</label>
+            <input type="text" id="confirm-person-agent-2" placeholder="姓名，律所：律所名称。联系方式：手机号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">单位申请人</label>
+            <input type="text" id="confirm-applicant-org" placeholder="{单位名称}" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">单位申请人基本信息</label>
+            <textarea id="confirm-applicant-org-info" placeholder="住所、证照类型、证照号码等" rows="2"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">法定代表人/主要负责人</label>
+            <input type="text" id="confirm-legal-representative" placeholder="姓名，证件类型：证件号码，职务：职务，联系方式：手机号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">单位代理人一</label>
+            <input type="text" id="confirm-org-agent-1" placeholder="姓名，律所：律所名称。联系方式：手机号" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">单位代理人二</label>
+            <input type="text" id="confirm-org-agent-2" placeholder="姓名，律所：律所名称。联系方式：手机号" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">诉讼请求</label>
+            <textarea id="confirm-claims" placeholder="填写司法确认请求，可换行或用分号分隔" rows="4"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">事实和理由</label>
+            <textarea id="confirm-facts-reasons" placeholder="写明达成调解协议的事实和申请司法确认的理由" rows="5"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">受诉人民法院</label>
+            <input type="text" id="confirm-court" placeholder="{法院名称}" class="text-field">
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="confirm-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="citizen-authorization-form" class="complaint-form-grid hidden">
+          <div class="field-row">
+            <label class="field-label">委托人</label>
+            <input type="text" id="auth-principal" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">委托人基本信息</label>
+            <textarea id="auth-principal-info" placeholder="性别、出生日期、民族、工作单位和职务或者职业、住所、联系方式" rows="2"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">律师受委托人</label>
+            <input type="text" id="auth-lawyer-agent" placeholder="×××，××律师事务所律师，联系方式：……" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">公民受委托人</label>
+            <textarea id="auth-citizen-agent" placeholder="姓名、性别、出生日期、民族、工作单位和职务或者职业、住所、联系方式、与委托人的关系" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">委托代理人姓名</label>
+            <input type="text" id="auth-agent-names" placeholder="×××、×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">当事人和案由</label>
+            <textarea id="auth-case-summary" placeholder="……(写明当事人和案由)" rows="2"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">代理人一姓名</label>
+            <input type="text" id="auth-agent-1-name" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">代理人一事项和权限</label>
+            <textarea id="auth-agent-1-authority" placeholder="写明代理事项和权限" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">代理人二姓名</label>
+            <input type="text" id="auth-agent-2-name" placeholder="×××" class="text-field">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">代理人二事项和权限</label>
+            <textarea id="auth-agent-2-authority" placeholder="写明代理事项和权限" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">日期</label>
+            <input type="text" id="auth-date" placeholder="××××年××月××日" class="text-field">
+          </div>
+        </div>
+        <div id="sales-contract-form" class="complaint-form-grid hidden">
+          <div class="field-row full"><label class="field-label">出卖人(甲方)</label><input type="text" id="sales-party-a" placeholder="甲方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">买受人(乙方)</label><input type="text" id="sales-party-b" placeholder="乙方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">商品信息</label><textarea id="sales-subject" placeholder="名称、规格、型号、数量、质量标准等" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">价款</label><input type="text" id="sales-price" placeholder="总价/单价" class="text-field"></div>
+          <div class="field-row"><label class="field-label">付款方式</label><input type="text" id="sales-payment" placeholder="一次性/分期/转账等" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">交付与验收</label><textarea id="sales-delivery" placeholder="交付时间、地点、方式、验收标准" rows="3"></textarea></div>
+          <div class="field-row full"><label class="field-label">违约责任</label><textarea id="sales-breach" placeholder="逾期付款、逾期交付、质量不合格等责任" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">争议解决</label><input type="text" id="sales-dispute" placeholder="向某人民法院起诉/仲裁" class="text-field"></div>
+          <div class="field-row"><label class="field-label">日期</label><input type="text" id="sales-date" placeholder="××××年××月××日" class="text-field"></div>
+        </div>
+        <div id="lease-contract-form" class="complaint-form-grid hidden">
+          <div class="field-row full"><label class="field-label">出租人(甲方)</label><input type="text" id="lease-party-a" placeholder="甲方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">承租人(乙方)</label><input type="text" id="lease-party-b" placeholder="乙方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">房屋位置及状况</label><textarea id="lease-house" placeholder="坐落、面积、用途、附属设施等" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">租赁期限</label><input type="text" id="lease-term" placeholder="自×年×月×日至×年×月×日" class="text-field"></div>
+          <div class="field-row"><label class="field-label">租金及押金</label><input type="text" id="lease-rent" placeholder="租金、支付周期、押金金额" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">费用承担</label><textarea id="lease-fees" placeholder="水电、物业、网络、维修等费用承担" rows="3"></textarea></div>
+          <div class="field-row full"><label class="field-label">违约责任</label><textarea id="lease-breach" placeholder="逾期付款、提前退租、房屋损坏等责任" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">争议解决</label><input type="text" id="lease-dispute" placeholder="向房屋所在地人民法院起诉" class="text-field"></div>
+          <div class="field-row"><label class="field-label">日期</label><input type="text" id="lease-date" placeholder="××××年××月××日" class="text-field"></div>
+        </div>
+        <div id="loan-contract-form" class="complaint-form-grid hidden">
+          <div class="field-row full"><label class="field-label">出借人(甲方)</label><input type="text" id="loan-party-a" placeholder="甲方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">借款人(乙方)</label><input type="text" id="loan-party-b" placeholder="乙方名称/姓名" class="text-field"></div>
+          <div class="field-row"><label class="field-label">借款金额</label><input type="text" id="loan-amount" placeholder="人民币×元" class="text-field"></div>
+          <div class="field-row"><label class="field-label">借款用途</label><input type="text" id="loan-purpose" placeholder="资金周转/经营等" class="text-field"></div>
+          <div class="field-row"><label class="field-label">借款期限</label><input type="text" id="loan-term" placeholder="自×年×月×日至×年×月×日" class="text-field"></div>
+          <div class="field-row"><label class="field-label">利息及还款</label><input type="text" id="loan-repayment" placeholder="利率、还款日期、还款方式" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">担保/保证</label><textarea id="loan-guarantee" placeholder="抵押、质押、保证人或无担保" rows="2"></textarea></div>
+          <div class="field-row full"><label class="field-label">违约责任</label><textarea id="loan-breach" placeholder="逾期还款、提前到期、律师费等" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">日期</label><input type="text" id="loan-date" placeholder="××××年××月××日" class="text-field"></div>
+        </div>
+        <div id="service-contract-form" class="complaint-form-grid hidden">
+          <div class="field-row full"><label class="field-label">委托方(甲方)</label><input type="text" id="service-party-a" placeholder="甲方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">服务方(乙方)</label><input type="text" id="service-party-b" placeholder="乙方名称/姓名" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">服务内容</label><textarea id="service-content" placeholder="服务事项、范围、交付成果" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">服务期限</label><input type="text" id="service-term" placeholder="自×年×月×日至×年×月×日" class="text-field"></div>
+          <div class="field-row"><label class="field-label">服务费用</label><input type="text" id="service-fee" placeholder="金额、支付节点、开票" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">验收标准</label><textarea id="service-acceptance" placeholder="验收方式、期限、整改要求" rows="3"></textarea></div>
+          <div class="field-row full"><label class="field-label">违约责任</label><textarea id="service-breach" placeholder="延期、质量不合格、保密违约等责任" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">争议解决</label><input type="text" id="service-dispute" placeholder="向某人民法院起诉/仲裁" class="text-field"></div>
+          <div class="field-row"><label class="field-label">日期</label><input type="text" id="service-date" placeholder="××××年××月××日" class="text-field"></div>
+        </div>
+        <div id="labor-contract-form" class="complaint-form-grid hidden">
+          <div class="field-row full"><label class="field-label">用人单位(甲方)</label><input type="text" id="labor-party-a" placeholder="单位名称" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">劳动者(乙方)</label><input type="text" id="labor-party-b" placeholder="劳动者姓名及身份信息" class="text-field"></div>
+          <div class="field-row"><label class="field-label">合同期限</label><input type="text" id="labor-term" placeholder="固定期限/无固定期限/试用期" class="text-field"></div>
+          <div class="field-row"><label class="field-label">工作岗位和地点</label><input type="text" id="labor-position" placeholder="岗位、工作地点" class="text-field"></div>
+          <div class="field-row"><label class="field-label">工作时间和休息休假</label><input type="text" id="labor-hours" placeholder="标准工时/综合工时等" class="text-field"></div>
+          <div class="field-row"><label class="field-label">劳动报酬</label><input type="text" id="labor-salary" placeholder="工资标准、支付日期" class="text-field"></div>
+          <div class="field-row full"><label class="field-label">社会保险和福利</label><textarea id="labor-benefits" placeholder="社保、公积金、福利待遇等" rows="2"></textarea></div>
+          <div class="field-row full"><label class="field-label">解除终止和违约责任</label><textarea id="labor-breach" placeholder="解除条件、经济补偿、保密竞业等" rows="3"></textarea></div>
+          <div class="field-row"><label class="field-label">日期</label><input type="text" id="labor-date" placeholder="××××年××月××日" class="text-field"></div>
+        </div>
+        <button class="btn-primary" onclick="submitGenerate()">
+          <span>生成文书</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="generate-result" class="result-container hidden"></div>
+    </section>
+
+    <!-- 模块5: 策略分析 -->
+    <section id="module-strategy" class="module hidden">
+      <div class="module-hero">
+        <h2 class="module-title">案情策略分析</h2>
+        <p class="module-sub">输入案件事实，获取法律适用、证据指引和诉讼策略的综合建议</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('strategy')">填入示例</button>
+        </div>
+        <div class="field-row">
+          <label class="field-label">当事人</label>
+          <input type="text" id="strategy-parties" placeholder="当事人姓名/名称、身份信息（原告、被告、第三人等）" class="text-field">
+        </div>
+        <div class="field-row">
+          <label class="field-label">事情经过</label>
+          <textarea id="strategy-facts" placeholder="请描述事实经过：时间线、关键事件、涉及的合同/协议等" rows="5"></textarea>
+        </div>
+        <div class="field-row">
+          <label class="field-label">争议焦点</label>
+          <textarea id="strategy-dispute" placeholder="双方的主要争议点是什么？对方的主张和理由？" rows="3"></textarea>
+        </div>
+        <div class="field-row">
+          <label class="field-label">当前进展</label>
+          <input type="text" id="strategy-status" placeholder="如：已立案、已开庭、正在协商和解、尚未起诉等" class="text-field">
+        </div>
+        <button class="btn-primary" onclick="submitStrategy()">
+          <span>策略分析</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="strategy-result" class="result-container hidden"></div>
+    </section>
+
+    <!-- 模块6: 大学生法律问题 -->
+    <section id="module-student" class="module hidden">
+      <div class="module-hero">
+        <h2 class="module-title">大学生法律问题</h2>
+        <p class="module-sub">聚焦校园管理、宿舍纠纷、师生矛盾、奖助学金、入党政审、社团合规与校外兼职被骗等学生常见法律风险</p>
+      </div>
+
+      <div class="input-card">
+        <div class="quick-actions">
+          <button class="btn-secondary" onclick="fillExample('student')">填入示例</button>
+        </div>
+        <div class="student-form-grid">
+          <div class="field-row">
+            <label class="field-label">问题类型</label>
+            <select id="student-scenario" class="select-field">
+              <option value="校园管理">校园管理</option>
+              <option value="宿舍纠纷">宿舍纠纷</option>
+              <option value="师生矛盾">师生矛盾</option>
+              <option value="奖学金/助学金">奖学金 / 助学金</option>
+              <option value="入党政审">入党政审</option>
+              <option value="社团合规">社团合规</option>
+              <option value="校外兼职被骗">校外兼职被骗</option>
+              <option value="实习劳动争议">实习劳动争议</option>
+              <option value="其他学生法律问题">其他学生法律问题</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">发生时间</label>
+            <input type="text" id="student-time" class="text-field" placeholder="如：2026年5月、上周三晚、奖学金公示期间">
+          </div>
+          <div class="field-row">
+            <label class="field-label">发生地点</label>
+            <input type="text" id="student-place" class="text-field" placeholder="如：宿舍、学院办公室、兼职门店、社团活动现场">
+          </div>
+          <div class="field-row">
+            <label class="field-label">涉及对象</label>
+            <input type="text" id="student-opposite" class="text-field" placeholder="如：辅导员、任课老师、舍友、社团负责人、兼职中介">
+          </div>
+          <div class="field-row full">
+            <label class="field-label">具体发生了什么</label>
+            <textarea id="student-facts" placeholder="按时间顺序写关键事实：谁做了什么、说了什么、造成了什么影响" rows="4"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">已有处理</label>
+            <textarea id="student-handling" placeholder="学校、学院、老师、平台或对方目前怎么处理" rows="3"></textarea>
+          </div>
+          <div class="field-row">
+            <label class="field-label">已有证据</label>
+            <textarea id="student-evidence" placeholder="如：聊天记录、转账记录、通知截图、录音、证人、学生手册条款" rows="3"></textarea>
+          </div>
+          <div class="field-row full">
+            <label class="field-label">你的诉求</label>
+            <input type="text" id="student-claim" class="text-field" placeholder="如：退还押金、撤销处理、公开评定依据、停止侵扰、书面道歉">
+          </div>
+        </div>
+        <button class="btn-primary" onclick="submitStudentLegal()">
+          <span>法律分析</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+
+      <div id="student-result" class="result-container hidden"></div>
+    </section>
+
+  </main>
+</div>
+
+<div id="contract-picker" class="modal-overlay hidden">
+  <div class="contract-picker-modal">
+    <div class="contract-picker-head">
+      <h3>选择合同类型</h3>
+      <button type="button" class="modal-close-btn" onclick="closeContractPicker()">×</button>
+    </div>
+    <div class="contract-picker-grid">
+      <button type="button" onclick="chooseContractType('买卖合同')"><strong>买卖合同</strong><span>货物、商品交易</span></button>
+      <button type="button" onclick="chooseContractType('房屋租赁合同')"><strong>房屋租赁合同</strong><span>租房、商铺租赁</span></button>
+      <button type="button" onclick="chooseContractType('借款合同')"><strong>借款合同</strong><span>民间借贷、还款</span></button>
+      <button type="button" onclick="chooseContractType('服务合同')"><strong>服务合同</strong><span>咨询、技术、项目服务</span></button>
+      <button type="button" onclick="chooseContractType('劳动合同')"><strong>劳动合同</strong><span>入职、岗位、薪酬</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- 加载层 -->
+<div id="loading-overlay" class="loader-overlay hidden">
+  <div class="loader-card">
+    <div class="loader-spin"></div>
+    <span class="loader-text">AI 正在分析中</span>
+  </div>
+</div>
+
+<!-- 登录/注册遮罩 -->
+<div id="auth-overlay" class="auth-overlay">
+  <!-- 左侧：品牌与能力展示 -->
+  <div class="auth-brand-panel">
+    <div class="auth-brand-bg" aria-hidden="true">
+      <div class="auth-bg-document auth-bg-document-a">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="auth-bg-document auth-bg-document-b">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="auth-bg-seal">法</div>
+    </div>
+    <div class="auth-brand-content">
+      <div class="auth-brand-kicker">智能法律工作台</div>
+      <div class="auth-brand-heading">
+        <svg class="auth-seal" width="76" height="76" viewBox="0 0 520 520" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="60" y="60" width="400" height="400" rx="24" fill="none" stroke="currentColor" stroke-width="14"/>
+          <rect x="100" y="100" width="320" height="320" rx="16" fill="none" stroke="currentColor" stroke-width="8"/>
+          <path d="M260 120 L260 400 M120 260 L400 260 M161 161 L359 359 M161 359 L359 161" stroke="currentColor" stroke-width="4"/>
+          <circle cx="260" cy="260" r="52" fill="none" stroke="currentColor" stroke-width="6"/>
+          <text x="260" y="275" text-anchor="middle" font-family="serif" font-size="48" font-weight="700" fill="currentColor">法</text>
+        </svg>
+        <div>
+          <h1 class="auth-brand-title">明鉴</h1>
+          <p class="auth-brand-sub">法律文本智能工作台</p>
+        </div>
+      </div>
+      <p class="auth-brand-desc">以法为镜，明辨是非</p>
+      <p class="auth-brand-copy">辅助完成文书生成、合同审查、案情分析与法规检索，让复杂法律文本处理更清晰、更高效。</p>
+      <div class="auth-brand-note">
+        <span>文书生成</span>
+        <i></i>
+        <span>合同审查</span>
+        <i></i>
+        <span>法规检索</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右侧：表单面板 -->
+  <div class="auth-form-panel">
+    <div class="auth-form-inner">
+      <div class="auth-form-head">
+        <span class="auth-form-eyebrow">安全访问</span>
+        <h2>欢迎回来</h2>
+        <p>登录后继续处理你的法律文书与案情分析</p>
+      </div>
+      <!-- 标签切换 -->
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchAuth('login');return false;">登录</button>
+        <button class="auth-tab" onclick="switchAuth('register');return false;">注册</button>
+      </div>
+
+      <!-- 登录表单 -->
+      <form id="login-form" class="auth-form" onsubmit="doLogin(); return false;">
+        <div class="auth-group">
+          <label>用户名</label>
+          <input type="text" id="login-username" placeholder="请输入用户名" autocomplete="username">
+        </div>
+        <div class="auth-group">
+          <label>密码</label>
+          <input type="password" id="login-password" placeholder="请输入密码" autocomplete="current-password">
+        </div>
+        <span id="login-error" class="auth-error"></span>
+        <button type="submit" class="auth-submit-btn">登录</button>
+      </form>
+
+      <!-- 注册表单 -->
+      <form id="register-form" class="auth-form hidden" onsubmit="doRegister(); return false;">
+        <div class="auth-group">
+          <label>用户名</label>
+          <input type="text" id="register-username" placeholder="至少3个字符" autocomplete="username">
+        </div>
+        <div class="auth-group">
+          <label>密码</label>
+          <input type="password" id="register-password" placeholder="至少6个字符" autocomplete="new-password">
+        </div>
+        <span id="register-error" class="auth-error"></span>
+        <button type="submit" class="auth-submit-btn">注册</button>
+      </form>
+
+      <p class="auth-switch" id="auth-switch-text">还没有账号？<a href="#" onclick="switchAuth('register');return false;">立即注册</a></p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/main.js?v=20260527contract"></script>
+</body>
+</html>
