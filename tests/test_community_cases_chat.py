@@ -18,6 +18,7 @@ with mock.patch.dict(
     import app as app_module
 
 from core.models import Conversation, ConversationMessage, db
+from core.cases.models import CaseCategory, CaseLawReference, LegalCase
 
 
 def register(client, prefix):
@@ -107,6 +108,33 @@ def test_verified_case_search_favorite_and_personalized_recommendations():
     opted_out = client.get("/api/cases/recommendations?limit=4").get_json()
     assert opted_out["personalization_enabled"] is False
     assert opted_out["cases"] == []
+
+
+def test_bundled_case_library_is_large_diverse_traceable_and_paginated():
+    with app_module.app.app_context():
+        rows = LegalCase.query.filter_by(status="published", verification_status="verified").all()
+        assert len(rows) == 200
+        assert CaseCategory.query.filter_by(is_active=True).count() >= 17
+        assert len({row.legal_domain for row in rows}) >= 12
+        assert len({row.court_name for row in rows}) >= 115
+        assert all(row.source_url.startswith("https://www.court.gov.cn/") for row in rows)
+        assert all(row.summary and row.dispute_focus and row.judgment_reasoning for row in rows)
+        assert all(len(row.source_hash) == 64 for row in rows)
+        assert CaseLawReference.query.count() >= 200
+
+    client = app_module.app.test_client()
+    register(client, "case-library-test")
+    first = client.get("/api/cases?per_page=20&page=1").get_json()
+    second = client.get("/api/cases?per_page=20&page=2").get_json()
+    assert first["pagination"]["total"] == 200
+    assert first["pagination"]["has_next"] is True
+    assert len(first["cases"]) == len(second["cases"]) == 20
+    assert {item["id"] for item in first["cases"]}.isdisjoint({item["id"] for item in second["cases"]})
+    assert all("media" in item for item in first["cases"])
+
+    detail = client.get(f"/api/cases/{first['cases'][0]['id']}").get_json()["case"]
+    assert detail["law_references"]
+    assert set(detail["media"]) == {"image_url", "image_alt", "image_source_url"}
 
 
 def test_private_chat_persists_before_delivery_and_enforces_membership():

@@ -1,4 +1,4 @@
-const casesState = { categories: [], category: "", feed: "latest", currentCaseId: null };
+const casesState = { categories: [], category: "", feed: "latest", page: 1, hasNext: false, currentCaseId: null };
 
 async function casesFetch(url, options = {}) {
   const response = await fetch(url, options);
@@ -21,12 +21,12 @@ async function initCases() {
     chips.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
       casesState.category = button.dataset.category || "";
       chips.querySelectorAll("button").forEach(item => item.classList.toggle("active", item === button));
-      loadCases();
+      loadCases({ reset: true });
     }));
     document.querySelectorAll("#cases-feeds button").forEach(button => button.addEventListener("click", () => {
       casesState.feed = button.dataset.feed;
       document.querySelectorAll("#cases-feeds button").forEach(item => item.classList.toggle("active", item === button));
-      loadCases();
+      loadCases({ reset: true });
     }));
   }
   const tasks = [loadCases()];
@@ -34,11 +34,14 @@ async function initCases() {
   await Promise.all(tasks);
 }
 
-async function loadCases() {
+async function loadCases({ reset = true } = {}) {
   const list = document.getElementById("cases-list");
   if (!list || !window._user) return;
-  list.innerHTML = '<div class="module-loading">正在载入权威案例…</div>';
-  const params = new URLSearchParams({ feed: casesState.feed, per_page: "20" });
+  if (reset) {
+    casesState.page = 1;
+    list.innerHTML = '<div class="module-loading">正在载入权威案例…</div>';
+  }
+  const params = new URLSearchParams({ feed: casesState.feed, per_page: "20", page: String(casesState.page) });
   const query = document.getElementById("cases-query")?.value.trim();
   if (casesState.category) params.set("category", casesState.category);
   if (query) params.set("q", query);
@@ -46,13 +49,29 @@ async function loadCases() {
     const data = await casesFetch(`/api/cases?${params}`);
     const cases = data.cases || [];
     document.getElementById("cases-total").textContent = `共 ${data.pagination?.total || 0} 个已核验案例`;
-    list.innerHTML = cases.length ? cases.map(renderCaseCard).join("") : '<div class="module-empty">没有找到匹配的案例。</div>';
+    const markup = cases.map(renderCaseCard).join("");
+    if (reset) list.innerHTML = cases.length ? markup : '<div class="module-empty">没有找到匹配的案例。</div>';
+    else list.insertAdjacentHTML("beforeend", markup);
+    casesState.hasNext = Boolean(data.pagination?.has_next);
+    document.getElementById("cases-load-more")?.classList.toggle("hidden", !casesState.hasNext);
   } catch (error) { list.innerHTML = `<div class="module-empty">${escapeHtml(error.message)}</div>`; }
+}
+
+async function loadMoreCases() {
+  if (!casesState.hasNext) return;
+  casesState.page += 1;
+  await loadCases({ reset: false });
 }
 
 function renderCaseCard(item) {
   const number = item.guiding_case_number || item.case_number || item.cause || "公开案例";
+  const category = item.categories?.[0]?.name || "典型案例";
+  const image = item.media?.image_url;
+  const visual = image
+    ? `<div class="case-card-media"><img src="${escapeHtml(image)}" alt="${escapeHtml(item.media?.image_alt || item.title)}" loading="lazy" referrerpolicy="no-referrer"></div>`
+    : `<div class="case-card-media case-card-placeholder" data-domain="${escapeHtml(item.legal_domain || "civil")}"><span>${escapeHtml(category.slice(0, 4))}</span></div>`;
   return `<article class="case-card" onclick="openCaseDetail(${item.id})">
+    ${visual}
     <div class="case-card-top"><span class="case-verified">✓ 来源已核验</span><span class="case-number">${escapeHtml(number)}</span></div>
     <h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p>
     <div class="case-card-foot"><span>${escapeHtml(item.court_name || item.cause || "")}</span><span>阅读 ${item.view_count} · 收藏 ${item.favorite_count}</span></div>
@@ -84,12 +103,13 @@ async function openCaseDetail(caseId) {
   try {
     const data = await casesFetch(`/api/cases/${caseId}`);
     const item = data.case;
-    const refs = (item.law_references || []).map(ref => `${escapeHtml(ref.law_name)} ${escapeHtml(ref.article || "")}`).join(" · ");
-    target.innerHTML = `<div class="case-detail-lead"><button class="case-detail-save" onclick="toggleCaseFavorite(${item.id})">${item.favorited ? "★ 已收藏" : "☆ 收藏案例"}</button><div class="case-detail-meta"><span>✓ 已核验</span><span>${escapeHtml(item.guiding_case_number || item.case_number || "")}</span><span>${escapeHtml(item.court_name || "")}</span><span>${escapeHtml(item.decision_date || "")}</span></div><h2>${escapeHtml(item.title)}</h2><div class="case-keywords">${(item.keywords || []).map(word => `<i>${escapeHtml(word)}</i>`).join("")}</div></div>
+    const refs = (item.law_references || []).map(ref => `<li><b>${escapeHtml(ref.law_name)} ${escapeHtml(ref.article || "")}</b>${ref.note ? `<span>${escapeHtml(ref.note)}</span>` : ""}</li>`).join("");
+    const hero = item.media?.image_url ? `<figure class="case-detail-media"><img src="${escapeHtml(item.media.image_url)}" alt="${escapeHtml(item.media.image_alt || item.title)}"><figcaption>图片来源：<a href="${escapeHtml(item.media.image_source_url || item.source.url)}" target="_blank" rel="noopener noreferrer">官方原页</a></figcaption></figure>` : "";
+    target.innerHTML = `${hero}<div class="case-detail-lead"><button class="case-detail-save" onclick="toggleCaseFavorite(${item.id})">${item.favorited ? "★ 已收藏" : "☆ 收藏案例"}</button><div class="case-detail-meta"><span>✓ 已核验</span><span>${escapeHtml(item.guiding_case_number || item.case_number || "")}</span><span>${escapeHtml(item.court_name || "")}</span><span>${escapeHtml(item.decision_date || "")}</span></div><h2>${escapeHtml(item.title)}</h2><div class="case-keywords">${(item.keywords || []).map(word => `<i>${escapeHtml(word)}</i>`).join("")}</div></div>
       <div class="case-structure">
         ${caseSection("案例摘要", item.summary, "full")}${caseSection("争议焦点", item.dispute_focus)}${caseSection("裁判结果", item.judgment_result)}${caseSection("裁判逻辑", item.judgment_reasoning, "full")}${caseSection("AI 通俗解读", item.ai_plain_language, "full ai")}
       </div>
-      <div class="case-source"><b>来源：</b>${escapeHtml(item.source.publisher || "权威公开来源")} · ${escapeHtml(item.source.type || "")}　<a href="${escapeHtml(item.source.url)}" target="_blank" rel="noopener noreferrer">查看官方原文 ↗</a>${refs ? `<div class="case-law-refs">涉及法律：${refs}</div>` : ""}</div>
+      <div class="case-source"><b>来源：</b>${escapeHtml(item.source.publisher || "权威公开来源")} · ${escapeHtml(item.source.type || "")}　<a href="${escapeHtml(item.source.url)}" target="_blank" rel="noopener noreferrer">查看官方原文 ↗</a>${refs ? `<div class="case-law-refs"><h4>关联法条与阅读提示</h4><ul>${refs}</ul></div>` : ""}</div>
       ${renderCaseCrosslinks(item)}`;
   } catch (error) { target.innerHTML = `<div class="module-empty">${escapeHtml(error.message)}</div>`; }
 }
