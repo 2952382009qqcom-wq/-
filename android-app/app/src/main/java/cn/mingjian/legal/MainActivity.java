@@ -1,5 +1,6 @@
 package cn.mingjian.legal;
 
+import android.Manifest;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
@@ -29,6 +30,9 @@ import android.widget.Toast;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.FileProvider;
+
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.messaging.FirebaseMessaging;
 
 import java.io.File;
 import java.io.IOException;
@@ -75,12 +79,30 @@ public final class MainActivity extends ComponentActivity {
         ));
 
         setContentView(root);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 902);
+        }
         configureWebView();
         configureBackNavigation();
 
         if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-            webView.loadUrl(BuildConfig.APP_URL);
+            webView.loadUrl(notificationUrl(getIntent()));
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        webView.loadUrl(notificationUrl(intent));
+    }
+
+    private String notificationUrl(Intent intent) {
+        String route = intent == null ? null : intent.getStringExtra("notification_route");
+        if (route == null || !route.startsWith("/") || route.startsWith("//")) {
+            return BuildConfig.APP_URL;
+        }
+        return BuildConfig.APP_URL.replaceAll("/$", "") + route;
     }
 
     private void configureBackNavigation() {
@@ -133,6 +155,7 @@ public final class MainActivity extends ComponentActivity {
             public void onPageFinished(WebView view, String url) {
                 progressBar.setVisibility(View.GONE);
                 CookieManager.getInstance().flush();
+                registerPushTokenWithWebSession();
             }
 
             @Override
@@ -186,6 +209,18 @@ public final class MainActivity extends ComponentActivity {
             } catch (Exception exception) {
                 Toast.makeText(this, "没有可处理该下载的应用", Toast.LENGTH_SHORT).show();
             }
+        });
+    }
+
+    private void registerPushTokenWithWebSession() {
+        if (FirebaseApp.getApps(this).isEmpty()) {
+            return;
+        }
+        FirebaseMessaging.getInstance().getToken().addOnSuccessListener(token -> {
+            String quoted = org.json.JSONObject.quote(token);
+            String script = "fetch('/api/notifications/devices',{method:'POST',credentials:'same-origin'," +
+                    "headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:'android',token:" + quoted + "})})";
+            webView.evaluateJavascript(script, null);
         });
     }
 

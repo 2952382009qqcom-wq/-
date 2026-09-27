@@ -5,19 +5,11 @@ from datetime import datetime, timedelta
 from core.models import db
 from core.taxonomy import infer_legal_domain
 
-from .models import UserActivityEvent, UserInterestProfile
+from .config import EVENT_WEIGHTS
+from .models import RecommendationImpression, UserActivityEvent, UserInterestProfile
 
 
-EVENT_WEIGHTS = {
-    "view": 1.0,
-    "search": 1.2,
-    "like": 1.8,
-    "comment": 2.0,
-    "post": 2.5,
-    "favorite": 3.5,
-    "unfavorite": -2.0,
-    "consult": 2.8,
-}
+SAFE_METADATA_KEYS = {"duration_bucket", "origin", "position", "query_terms_count"}
 
 
 def record_event(
@@ -38,6 +30,10 @@ def record_event(
     domain = legal_domain or "other"
     if domain == "other" and safe_metadata:
         domain = infer_legal_domain(" ".join(map(str, safe_metadata.values())))
+    safe_values = {
+        key: value for key, value in (safe_metadata or {}).items()
+        if key in SAFE_METADATA_KEYS and isinstance(value, (str, int, float, bool))
+    }
     event = UserActivityEvent(
         user_id=int(user_id),
         event_type=event_type,
@@ -45,7 +41,7 @@ def record_event(
         entity_id=str(entity_id or "")[:64],
         legal_domain=domain[:40],
         weight=EVENT_WEIGHTS[event_type],
-        safe_metadata_json=json.dumps(safe_metadata or {}, ensure_ascii=False),
+        safe_metadata_json=json.dumps(safe_values, ensure_ascii=False),
     )
     db.session.add(event)
     if commit:
@@ -88,5 +84,6 @@ def set_personalization(user_id, enabled):
     if not enabled:
         profile.domain_weights_json = "{}"
         UserActivityEvent.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        RecommendationImpression.query.filter_by(user_id=user_id).delete(synchronize_session=False)
     db.session.commit()
     return profile

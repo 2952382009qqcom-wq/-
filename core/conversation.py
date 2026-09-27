@@ -105,7 +105,7 @@ def add_message(
     return message
 
 
-def conversation_context(conversation: Conversation, limit: int = 8) -> str:
+def conversation_context(conversation: Conversation, limit: int = 20, char_budget: int = 8000) -> str:
     rows = (
         ConversationMessage.query
         .filter_by(conversation_id=conversation.id)
@@ -113,10 +113,14 @@ def conversation_context(conversation: Conversation, limit: int = 8) -> str:
         .limit(max(1, min(int(limit), 20)))
         .all()
     )
-    rows.reverse()
     labels = {"user": "用户", "assistant": "明鉴"}
     rendered = []
-    for turn_index, row in enumerate(rows, 1):
+    remaining = max(2000, min(int(char_budget), 20000))
+    # Work backwards so the current task and recent corrections survive the
+    # budget. Role and timestamp stay explicit; older turns are represented by
+    # ConversationSummary rather than silently mixing roles.
+    for reverse_index, row in enumerate(rows, 1):
+        turn_index = len(rows) - reverse_index + 1
         # Citation ids are scoped to one response.  Do not leak an old [L1]
         # into a new retrieval/audit round, and namespace redaction markers so
         # two turns' independently-created [姓名_1] values are not conflated.
@@ -126,7 +130,12 @@ def conversation_context(conversation: Conversation, limit: int = 8) -> str:
             rf"[T{turn_index}_\1_\2]",
             content,
         )
-        rendered.append(f"{labels.get(row.role, row.role)}：{content}")
+        line = f"[{row.created_at.isoformat(timespec='minutes')}] {labels.get(row.role, row.role)}：{content}"
+        if len(line) > remaining and rendered:
+            break
+        rendered.append(line[-remaining:])
+        remaining -= min(len(line), remaining)
+    rendered.reverse()
     return "\n".join(rendered)
 
 

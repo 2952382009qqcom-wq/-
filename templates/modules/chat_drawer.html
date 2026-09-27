@@ -7,7 +7,12 @@
     <div class="chat-conversation">
       <div id="chat-conversation-head" class="chat-conversation-head">选择一位用户开始私聊</div>
       <div id="chat-messages" class="chat-messages"><div class="chat-empty">消息仅对会话双方可见。匿名帖子不会暴露发帖账号。</div></div>
-      <form class="chat-composer" onsubmit="sendChatMessage(event)"><textarea id="chat-message-input" rows="1" maxlength="4000" placeholder="输入消息…" disabled oninput="emitChatTyping()"></textarea><button id="chat-send" type="submit" disabled>发送</button></form>
+      <div id="chat-reply-banner" class="chat-reply-banner hidden"><span></span><button type="button" onclick="cancelChatReply()">×</button></div>
+      <form class="chat-composer" onsubmit="sendChatMessage(event)">
+        <label class="chat-file-button" title="发送图片或附件">＋<input type="file" accept="image/jpeg,image/png,image/gif,application/pdf,text/plain,.docx" onchange="sendChatAttachment(this)"></label>
+        <textarea id="chat-message-input" rows="1" maxlength="4000" placeholder="输入消息（支持有限 Markdown）…" disabled oninput="emitChatTyping()"></textarea>
+        <button id="chat-send" type="submit" disabled>发送</button>
+      </form>
     </div>
   </div>
 </aside>

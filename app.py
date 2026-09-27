@@ -41,6 +41,8 @@ from core.extensions import limiter, migrate, socketio
 from core.community.routes import community_bp
 from core.cases.routes import cases_bp
 from core.chat.routes import chat_bp
+from core.notifications.routes import notifications_bp
+from core.memory.routes import memory_bp
 from core.cases.seed import seed_reference_data
 from core.recommendations.events import record_event
 from core.taxonomy import infer_legal_domain
@@ -49,6 +51,9 @@ from core.community import models as _community_models  # noqa: F401
 from core.cases import models as _case_models  # noqa: F401
 from core.chat import models as _chat_models  # noqa: F401
 from core.recommendations import models as _recommendation_models  # noqa: F401
+from core.notifications import models as _notification_models  # noqa: F401
+from core.memory import models as _memory_models  # noqa: F401
+from core.memory.services import build_memory_context
 from core.conversation import (
     ConversationNotFound,
     add_message,
@@ -89,6 +94,11 @@ cors_origins = [
 CORS(app, supports_credentials=True, origins=cors_origins)
 
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.getenv("COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes"},
+)
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///chatlaw.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 try:
@@ -114,6 +124,20 @@ login_manager.init_app(app)
 def unauthorized():
     return jsonify({"error": "请先登录"}), 401
 
+
+@app.before_request
+def reject_cross_site_mutations():
+    """CSRF boundary for session-authenticated JSON/upload APIs and Socket handshakes."""
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        return jsonify({"error": "拒绝跨站请求", "code": "csrf_rejected"}), 403
+    origin = request.headers.get("Origin", "").rstrip("/")
+    allowed = {value.rstrip("/") for value in cors_origins}
+    if origin and origin not in allowed:
+        return jsonify({"error": "请求来源不受信任", "code": "csrf_rejected"}), 403
+    return None
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -122,6 +146,8 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(community_bp)
 app.register_blueprint(cases_bp)
 app.register_blueprint(chat_bp)
+app.register_blueprint(notifications_bp)
+app.register_blueprint(memory_bp)
 # Event decorators are registered as a side effect of this import.
 from core.chat import socket_events as _chat_socket_events  # noqa: E402,F401
 
@@ -1689,7 +1715,7 @@ def _run_legal_agent_turn(data, upload=None):
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
         combined_text, max_chars, parsed, filename
     )
-    context = conversation_context(conversation, limit=8)
+    context = conversation_context(conversation, limit=20, char_budget=8000)
     try:
         if intent == INTENT_REVIEW:
             if _is_current_demo_mode():
@@ -1727,7 +1753,13 @@ def _run_legal_agent_turn(data, upload=None):
             if _is_current_demo_mode():
                 raw_result = _demo_search(model_text)
             else:
-                prompt = build_general_prompt(model_text, context, focus=focus)
+                memory_context = build_memory_context(current_user.id, conversation.id, model_text)
+                prompt = build_general_prompt(
+                    model_text, context, focus=focus,
+                    conversation_summary=memory_context["summary"],
+                    relevant_memories=memory_context["memories"],
+                    attachment_evidence=attachment_text[:6000] if attachment_text else "无",
+                )
                 raw_result = _llm_or_demo(
                     _call_llm(SYSTEM_PROMPT, prompt), _demo_search, model_text
                 )

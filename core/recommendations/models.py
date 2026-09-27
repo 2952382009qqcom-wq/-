@@ -9,7 +9,7 @@ class UserActivityEvent(db.Model):
     __tablename__ = "user_activity_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('view', 'search', 'favorite', 'unfavorite', 'like', 'post', 'comment', 'consult')",
+            "event_type IN ('impression', 'click', 'dwell', 'view', 'search', 'favorite', 'unfavorite', 'dismiss', 'open_source', 'related_community_click', 'like', 'post', 'comment', 'consult')",
             name="ck_user_activity_event_type",
         ),
         Index("ix_user_events_user_created", "user_id", "created_at"),
@@ -24,6 +24,8 @@ class UserActivityEvent(db.Model):
     legal_domain = db.Column(db.String(40), nullable=False, default="other", index=True)
     weight = db.Column(db.Float, nullable=False, default=1.0)
     safe_metadata_json = db.Column(db.Text, nullable=False, default="{}")
+    # Deliberately stores only coarse duration buckets or UI origin; never raw
+    # consultation text, chat content, names, addresses or device identifiers.
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
@@ -46,7 +48,7 @@ class RecommendationImpression(db.Model):
     case_id = db.Column(db.Integer, db.ForeignKey("legal_cases.id", ondelete="CASCADE"), nullable=False)
     score = db.Column(db.Float, nullable=False)
     reason_codes_json = db.Column(db.Text, nullable=False, default="[]")
-    algorithm_version = db.Column(db.String(32), nullable=False, default="hybrid-v1")
+    algorithm_version = db.Column(db.String(32), nullable=False, default="layered-v2")
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 

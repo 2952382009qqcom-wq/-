@@ -31,3 +31,11 @@ cd android-app
 ## 当前限制
 
 当前后端地址是 HTTP IP，因此测试工程临时允许明文网络。此配置只适合内测；正式参赛发布前应配置域名和 HTTPS，然后把 `network_security_config.xml` 改为禁止明文流量。
+# Optional FCM push configuration
+
+The Android app compiles without a committed Firebase configuration. To enable
+offline push notifications, download `google-services.json` from the project's
+Firebase console and place it at `android-app/app/google-services.json`. This
+file is secret deployment configuration and is intentionally ignored by Git.
+The server registers the FCM token through the authenticated WebView session;
+notification taps route back to the relative page supplied by the server.

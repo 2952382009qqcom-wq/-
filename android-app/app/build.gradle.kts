@@ -2,6 +2,10 @@ plugins {
     id("com.android.application")
 }
 
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "cn.mingjian.legal"
     compileSdk = 36
@@ -43,4 +47,6 @@ android {
 dependencies {
     implementation("androidx.activity:activity:1.11.0")
     implementation("androidx.core:core:1.17.0")
+    implementation(platform("com.google.firebase:firebase-bom:34.7.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }

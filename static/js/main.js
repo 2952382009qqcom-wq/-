@@ -3217,6 +3217,36 @@ async function revokeUser(userId) {
   }
 }
 
+// ===== User-controlled AI memory =====
+async function memoryRequest(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "记忆操作失败");
+  return data;
+}
+
+async function openMemorySettings() {
+  try {
+    const data = await memoryRequest("/api/memory/items");
+    let modal = document.getElementById("memory-settings-modal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "memory-settings-modal"; modal.className = "mj-modal";
+      modal.innerHTML = '<div class="mj-modal-backdrop" onclick="closeMemorySettings()"></div><section class="mj-modal-panel memory-panel"><div class="mj-modal-head"><div><small>PRIVACY CONTROL</small><h3>我的 AI 记忆</h3></div><button onclick="closeMemorySettings()">×</button></div><div id="memory-settings-body" class="memory-settings-body"></div></section>';
+      document.body.appendChild(modal);
+    }
+    const items = (data.items || []).map(item => `<article class="memory-item"><div><b>${escapeHtml(item.memory_type)}</b><small>${escapeHtml(item.legal_domain || "other")} · ${escapeHtml(item.reason || "用户主动保存")}</small><p>${escapeHtml(item.content)}</p></div><button onclick="deleteMemoryItem('${item.id}')">删除</button></article>`).join("");
+    document.getElementById("memory-settings-body").innerHTML = `<label class="memory-switch"><input type="checkbox" ${data.enabled ? "checked" : ""} onchange="toggleLongTermMemory(this.checked)"><span>启用长期记忆（默认关闭）</span></label><p class="memory-note">仅保存你主动确认的内容；私聊、匿名社区内容和敏感信息不会自动进入记忆。</p><div class="memory-actions"><button onclick="addMemoryItem()" ${data.enabled ? "" : "disabled"}>＋ 主动添加</button><a href="/api/memory/export" target="_blank" rel="noopener">导出</a><button onclick="clearMemoryItems()" class="danger">清空</button></div><div class="memory-list">${items || '<p class="memory-empty">暂未保存长期记忆。</p>'}</div>`;
+    modal.classList.remove("hidden");
+  } catch (error) { alert(error.message); }
+}
+
+function closeMemorySettings() { document.getElementById("memory-settings-modal")?.classList.add("hidden"); }
+async function toggleLongTermMemory(enabled) { try { await memoryRequest("/api/memory/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) }); openMemorySettings(); } catch (error) { alert(error.message); } }
+async function addMemoryItem() { const content = prompt("输入希望明鉴记住的稳定偏好或事实（不要填写密码、证件号等敏感信息）"); if (!content?.trim()) return; try { await memoryRequest("/api/memory/items", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memory_type: "stable_fact", content: content.trim(), reason: "用户在记忆面板主动保存" }) }); openMemorySettings(); } catch (error) { alert(error.message); } }
+async function deleteMemoryItem(id) { if (!confirm("确定删除这条记忆吗？")) return; try { await memoryRequest(`/api/memory/items/${encodeURIComponent(id)}`, { method: "DELETE" }); openMemorySettings(); } catch (error) { alert(error.message); } }
+async function clearMemoryItems() { if (!confirm("确定清空全部长期记忆吗？此操作不会删除对话历史。")) return; try { await memoryRequest("/api/memory/items", { method: "DELETE" }); openMemorySettings(); } catch (error) { alert(error.message); } }
+
 // ===== Initialization =====
 document.addEventListener("DOMContentLoaded", async () => {
   try {

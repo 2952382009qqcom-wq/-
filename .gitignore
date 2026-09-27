@@ -44,6 +44,7 @@ tmp/
 *.p12
 *.pfx
 local.properties
+google-services.json
 .gradle/
 **/build/
 

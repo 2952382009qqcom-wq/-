@@ -7,6 +7,7 @@ from core.models import db
 from core.recommendations.events import record_event, set_personalization
 from core.recommendations.models import UserInterestProfile
 from core.recommendations.ranking import recommend_cases
+from core.recommendations.config import ALGORITHM_VERSION, COMPATIBILITY_ALIAS
 from core.search.client import search_ids
 from core.taxonomy import safe_search_terms
 
@@ -75,12 +76,35 @@ def list_cases():
 def recommendations():
     profile = UserInterestProfile.query.filter_by(user_id=current_user.id).first()
     if profile is not None and not profile.personalization_enabled:
-        return jsonify({"cases": [], "algorithm": "hybrid-v1", "personalization_enabled": False})
-    ranked = recommend_cases(current_user.id, request.args.get("limit", 8, type=int))
+        return jsonify({"cases": [], "algorithm": COMPATIBILITY_ALIAS, "algorithm_version": ALGORITHM_VERSION, "personalization_enabled": False})
+    ranked = recommend_cases(
+        current_user.id,
+        request.args.get("limit", 8, type=int),
+        context_text=request.args.get("q", "")[:120],
+        domain=request.args.get("domain", "")[:40],
+    )
     return jsonify({"cases": [
         serialize_case_card(case, current_user.id, recommendation={"score": score, "reasons": reasons})
         for case, score, reasons in ranked
-    ], "algorithm": "hybrid-v1", "personalization_enabled": True})
+    ], "algorithm": COMPATIBILITY_ALIAS, "algorithm_version": ALGORITHM_VERSION, "personalization_enabled": True})
+
+
+@cases_bp.post("/<int:case_id>/events")
+@login_required
+@limiter.limit("120 per minute")
+def case_event(case_id):
+    case = LegalCase.query.filter_by(id=case_id, status="published", verification_status="verified").first()
+    if case is None:
+        return jsonify({"error": "案例不存在"}), 404
+    data = request.get_json(silent=True) or {}
+    event_type = str(data.get("event_type", ""))
+    if event_type not in {"impression", "click", "dwell", "dismiss", "open_source", "related_community_click"}:
+        return jsonify({"error": "不支持的事件类型"}), 400
+    event = record_event(
+        current_user.id, event_type, entity_type="case", entity_id=case.id,
+        legal_domain=case.legal_domain, safe_metadata=data.get("metadata"),
+    )
+    return jsonify({"status": "ok", "recorded": event is not None})
 
 
 @cases_bp.get("/<int:case_id>")
