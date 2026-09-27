@@ -1,0 +1,21 @@
+[Unit]
+Description=MingJian background scheduler
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/chatlaw
+EnvironmentFile=/opt/chatlaw/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTO_INIT_DB=0
+Environment=AUTO_SEED_REFERENCE_DATA=0
+StateDirectory=chatlaw
+ExecStart=/opt/chatlaw/.venv/bin/celery -A worker.celery beat --loglevel=INFO --schedule=/var/lib/chatlaw/celerybeat-schedule
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+User=root
+
+[Install]
+WantedBy=multi-user.target

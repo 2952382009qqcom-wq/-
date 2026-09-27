@@ -1,0 +1,20 @@
+[Unit]
+Description=MingJian background worker
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/chatlaw
+EnvironmentFile=/opt/chatlaw/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTO_INIT_DB=0
+Environment=AUTO_SEED_REFERENCE_DATA=0
+ExecStart=/opt/chatlaw/.venv/bin/celery -A worker.celery worker --pool=solo --concurrency=1 --loglevel=INFO
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+User=root
+
+[Install]
+WantedBy=multi-user.target
