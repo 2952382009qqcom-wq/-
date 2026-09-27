@@ -177,7 +177,52 @@ def delete_user(user_id):
         return jsonify({'error': '用户不存在'}), 404
     if user.is_admin:
         return jsonify({'error': '不能删除管理员账号'}), 400
-    AnalysisRecord.query.filter_by(user_id=user.id).delete()
+    # Keep public discussions useful while removing the account link, and
+    # remove private/personal records that should not survive account deletion.
+    from core.cases.models import CaseFavorite, LegalCase
+    from core.chat.models import ChatMessage, ChatParticipant, ChatThread, UserBlock
+    from core.community.models import (
+        CommunityComment,
+        CommunityCommentLike,
+        CommunityPost,
+        CommunityPostFavorite,
+        CommunityPostLike,
+        CommunityReport,
+        ModerationAction,
+        Notification,
+    )
+    from core.recommendations.models import RecommendationImpression, UserActivityEvent, UserInterestProfile
+
+    thread_ids = [row.thread_id for row in ChatParticipant.query.filter_by(user_id=user.id).all()]
+    if thread_ids:
+        ChatMessage.query.filter(ChatMessage.thread_id.in_(thread_ids)).delete(synchronize_session=False)
+        ChatParticipant.query.filter(ChatParticipant.thread_id.in_(thread_ids)).delete(synchronize_session=False)
+        ChatThread.query.filter(ChatThread.id.in_(thread_ids)).delete(synchronize_session=False)
+    UserBlock.query.filter(
+        (UserBlock.blocker_id == user.id) | (UserBlock.blocked_id == user.id)
+    ).delete(synchronize_session=False)
+
+    CommunityPost.query.filter_by(author_id=user.id).update({"author_id": None}, synchronize_session=False)
+    CommunityComment.query.filter_by(author_id=user.id).update({"author_id": None}, synchronize_session=False)
+    CommunityComment.query.filter_by(reply_to_user_id=user.id).update({"reply_to_user_id": None}, synchronize_session=False)
+    Notification.query.filter_by(actor_id=user.id).update({"actor_id": None}, synchronize_session=False)
+    ModerationAction.query.filter_by(moderator_id=user.id).update({"moderator_id": None}, synchronize_session=False)
+    LegalCase.query.filter_by(created_by=user.id).update({"created_by": None}, synchronize_session=False)
+
+    for model in (
+        CommunityPostLike,
+        CommunityCommentLike,
+        CommunityPostFavorite,
+        CommunityReport,
+        Notification,
+        CaseFavorite,
+        UserActivityEvent,
+        RecommendationImpression,
+        UserInterestProfile,
+    ):
+        column = "reporter_id" if model is CommunityReport else "user_id"
+        model.query.filter_by(**{column: user.id}).delete(synchronize_session=False)
+    AnalysisRecord.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     db.session.delete(user)
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已删除用户 {user.username}'})

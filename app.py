@@ -37,6 +37,18 @@ from core.privacy import (
     redact_nested_json,
 )
 from core.models import db, User, AnalysisRecord
+from core.extensions import limiter, migrate, socketio
+from core.community.routes import community_bp
+from core.cases.routes import cases_bp
+from core.chat.routes import chat_bp
+from core.cases.seed import seed_reference_data
+from core.recommendations.events import record_event
+from core.taxonomy import infer_legal_domain
+# Import model modules before db.create_all so every new table is registered.
+from core.community import models as _community_models  # noqa: F401
+from core.cases import models as _case_models  # noqa: F401
+from core.chat import models as _chat_models  # noqa: F401
+from core.recommendations import models as _recommendation_models  # noqa: F401
 from core.conversation import (
     ConversationNotFound,
     add_message,
@@ -84,6 +96,16 @@ try:
 except (TypeError, ValueError):
     app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 db.init_app(app)
+migrate.init_app(app, db)
+app.config["RATELIMIT_STORAGE_URI"] = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
+limiter.init_app(app)
+socketio.init_app(
+    app,
+    cors_allowed_origins=cors_origins,
+    message_queue=os.getenv("SOCKETIO_REDIS_URL", "").strip() or None,
+    logger=False,
+    engineio_logger=False,
+)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -97,6 +119,11 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 app.register_blueprint(auth_bp)
+app.register_blueprint(community_bp)
+app.register_blueprint(cases_bp)
+app.register_blueprint(chat_bp)
+# Event decorators are registered as a side effect of this import.
+from core.chat import socket_events as _chat_socket_events  # noqa: E402,F401
 
 APP_VERSION = os.getenv("APP_VERSION", "2026.09-legal-agent")
 
@@ -139,6 +166,8 @@ def ensure_application_schema():
     with app.app_context():
         db.create_all()
         ensure_user_schema()
+        if os.getenv("AUTO_SEED_REFERENCE_DATA", "1").strip().lower() not in {"0", "false", "no"}:
+            seed_reference_data()
 
 
 if os.getenv("AUTO_INIT_DB", "1").strip().lower() not in {"0", "false", "no"}:
@@ -1583,6 +1612,19 @@ def _run_legal_agent_turn(data, upload=None):
         requested_action=requested_action,
         active_document_type=active_doc_type,
     )
+    # Recommendation telemetry stores only a coarse legal domain, never the
+    # consultation text, attachment content or extracted personal data.
+    try:
+        record_event(
+            current_user.id,
+            "consult",
+            entity_type="conversation",
+            entity_id=conversation.id,
+            legal_domain=infer_legal_domain(message),
+        )
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Unable to record privacy-safe consultation interest")
 
     if intent == INTENT_DRAFT:
         doc_type = active_doc_type or infer_document_type(message) or "起诉状"
@@ -3360,4 +3402,4 @@ if __name__ == "__main__":
     print("  明鉴 - 基于大模型的法律文书智能助手")
     print("  访问地址: http://localhost:5000")
     print("=" * 60)
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    socketio.run(app, debug=False, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)

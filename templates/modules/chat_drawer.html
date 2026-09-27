@@ -1,0 +1,13 @@
+<div id="chat-overlay" class="chat-overlay hidden" onclick="closeChatDrawer()"></div>
+<aside id="chat-drawer" class="chat-drawer hidden" aria-label="私聊">
+  <div class="chat-drawer-head"><div><span>PRIVATE &amp; REAL-TIME</span><h3>明鉴私聊</h3></div><button type="button" onclick="closeChatDrawer()">×</button></div>
+  <div class="chat-search"><input id="chat-user-query" type="search" placeholder="搜索用户名开始私聊" oninput="searchChatUsers(this.value)"><div id="chat-user-results" class="chat-user-results hidden"></div></div>
+  <div class="chat-layout">
+    <div id="chat-thread-list" class="chat-thread-list"></div>
+    <div class="chat-conversation">
+      <div id="chat-conversation-head" class="chat-conversation-head">选择一位用户开始私聊</div>
+      <div id="chat-messages" class="chat-messages"><div class="chat-empty">消息仅对会话双方可见。匿名帖子不会暴露发帖账号。</div></div>
+      <form class="chat-composer" onsubmit="sendChatMessage(event)"><textarea id="chat-message-input" rows="1" maxlength="4000" placeholder="输入消息…" disabled oninput="emitChatTyping()"></textarea><button id="chat-send" type="submit" disabled>发送</button></form>
+    </div>
+  </div>
+</aside>

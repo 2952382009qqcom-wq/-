@@ -1,0 +1,55 @@
+<section id="module-community" class="module hidden social-module">
+  <div class="community-hero">
+    <div>
+      <span class="workspace-eyebrow">CAMPUS LEGAL COMMONS</span>
+      <h2 class="module-title">法律社区</h2>
+      <p class="module-sub">把真实困惑变成可讨论、可行动、可核验的法律问题。</p>
+    </div>
+    <button type="button" class="community-compose-primary" onclick="openCommunityComposer()">＋ 发起讨论</button>
+  </div>
+
+  <div class="community-search-row">
+    <label class="community-search"><span>⌕</span><input id="community-query" type="search" placeholder="搜索校园权益、实习、租房或维权问题" onkeydown="if(event.key==='Enter')loadCommunityPosts()"></label>
+    <button type="button" class="btn-secondary compact" onclick="loadCommunityPosts()">搜索</button>
+  </div>
+  <div id="community-categories" class="community-chips" aria-label="社区分类"></div>
+  <div class="community-toolbar">
+    <div id="community-feeds" class="community-feed-tabs">
+      <button type="button" class="active" data-feed="latest">最新</button>
+      <button type="button" data-feed="popular">热议</button>
+      <button type="button" data-feed="favorites">我的收藏</button>
+      <button type="button" data-feed="resolved">已解决求助</button>
+    </div>
+    <label class="community-type-filter">内容类型
+      <select id="community-type" onchange="loadCommunityPosts()">
+        <option value="">全部</option><option value="legal_help">法律求助</option><option value="discussion">经验讨论</option>
+      </select>
+    </label>
+  </div>
+  <div id="community-list" class="community-grid"><div class="module-loading">正在加载社区内容…</div></div>
+</section>
+
+<div id="community-compose-modal" class="mj-modal hidden" role="dialog" aria-modal="true" aria-labelledby="community-compose-title">
+  <div class="mj-modal-backdrop" onclick="closeCommunityComposer()"></div>
+  <form class="mj-modal-panel community-compose-panel" onsubmit="submitCommunityPost(event)">
+    <div class="mj-modal-head"><div><span class="workspace-eyebrow">CREATE WITH CARE</span><h3 id="community-compose-title">发起社区讨论</h3></div><button type="button" onclick="closeCommunityComposer()">×</button></div>
+    <div id="community-ai-origin" class="community-ai-origin hidden">内容由你的 AI 咨询整理，发布前请确认脱敏结果与事实表述。</div>
+    <div class="community-form-grid">
+      <label>分类<select id="community-compose-category" required></select></label>
+      <label>类型<select id="community-compose-type"><option value="legal_help">法律求助</option><option value="discussion">经验讨论</option></select></label>
+    </div>
+    <label>标题<input id="community-compose-title-input" maxlength="160" required placeholder="用一句话说清你遇到的问题"></label>
+    <label>问题与经过<textarea id="community-compose-body" maxlength="12000" rows="9" required placeholder="建议写明时间线、已经采取的措施、现有证据和你的诉求。发布时会再次自动脱敏。"></textarea></label>
+    <label class="community-anonymous"><input id="community-compose-anonymous" type="checkbox" checked><span><b>匿名发布</b><small>公开页面不会显示你的账号；平台仍保留必要审计信息。</small></span></label>
+    <input id="community-draft-token" type="hidden">
+    <div class="community-compose-actions"><button type="button" class="btn-secondary" onclick="closeCommunityComposer()">取消</button><button type="submit" class="btn-primary">确认发布</button></div>
+  </form>
+</div>
+
+<div id="community-detail-modal" class="mj-modal hidden" role="dialog" aria-modal="true">
+  <div class="mj-modal-backdrop" onclick="closeCommunityDetail()"></div>
+  <div class="mj-modal-panel community-detail-panel">
+    <div class="mj-modal-head"><div><span class="workspace-eyebrow">COMMUNITY NOTE</span><h3>社区讨论</h3></div><button type="button" onclick="closeCommunityDetail()">×</button></div>
+    <div id="community-detail-content" class="community-detail-content"></div>
+  </div>
+</div>

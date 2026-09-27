@@ -15,6 +15,10 @@
 - **数据最小化**：文档提取预览不消耗 AI 调用次数，也不持久化原文；分析记录写入数据库前会再次执行脱敏。
 - **多轮法律会话**：会话按用户隔离保存，继续追问时会把最近对话作为上下文交给模型。
 - **统一智能体入口**：同一个聊天输入框支持文字、PDF、Word、图片和移动端拍照。系统自动识别任务与合同，并复用现有 OCR、合同审查、策略和文书生成能力。
+- **法律社区**：面向大学生的非传统论坛式知识社区，支持匿名求助、分类、搜索、评论/回复、点赞、收藏、举报和求助状态；AI 咨询只能在用户预览并确认后转成匿名求助。
+- **真实案例库**：以案例摘要、争议焦点、裁判结果、裁判逻辑、AI 通俗解读和官方来源进行结构化展示；首批案例来自最高人民法院公开页面并保留来源校验信息。
+- **互联与推荐**：社区问题按法律领域关联真实案例，案例页反向推荐社区讨论；基础混合推荐综合浏览、搜索、收藏、社区互动及咨询领域，并允许用户关闭和清空个性化行为画像。
+- **站内私聊**：持久化一对一会话，支持 WebSocket 实时收发与 REST 降级；服务端在写入数据库后才广播消息，并逐次校验会话成员资格。
 
 本项目使用和参考的开源组件及许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
@@ -47,12 +51,20 @@
 | `POST /api/legal-agent-stream` | 需要获批用户 | 智能体 SSE 流式入口，依次返回处理状态、回答片段与完整结果 |
 | `GET /api/legal-agent/conversations` | 需要登录 | 获取当前用户的会话历史 |
 | `GET/DELETE /api/legal-agent/conversations/<id>` | 需要登录 | 读取或删除当前用户拥有的会话 |
+| `GET/POST /api/community/posts` | 需要登录 | 社区检索与发帖；详情接口提供评论和相关案例 |
+| `POST /api/community/ai-draft` | 需要登录 | 从本人 AI 会话生成已脱敏、待确认的匿名求助草稿 |
+| `GET /api/cases` | 需要登录 | 已核验案例分类、检索和收藏 |
+| `GET /api/cases/recommendations` | 需要登录 | 返回带推荐理由的个性化案例结果 |
+| `GET/POST /api/chat/threads` | 需要登录 | 一对一私聊会话；Socket.IO 命名空间为 `/chat` |
 
 ## 安全说明
 
 - 不要提交 `.env`、数据库文件、日志、输出文件或本地虚拟环境。
 - 首次部署前复制 `.env.example` 为 `.env`，并设置真实的 `LLM_API_KEY`、强 `ADMIN_PASSWORD` 和随机 `SECRET_KEY`。
 - 生产环境请设置 `CORS_ORIGINS` 为实际站点域名。
+- 社区公开内容会再次执行手机号、身份证、邮箱、银行卡等确定性脱敏；匿名只隐藏公开身份，管理员仍可审计举报内容。
+- 推荐事件只保存法律领域、行为类型和对象 ID，不保存 AI 咨询原文；关闭个性化会清空该用户的推荐行为事件。
+- 生产环境应把 `RATELIMIT_STORAGE_URI` 与 `SOCKETIO_REDIS_URL` 指向 Redis，并通过 HTTPS/WSS 暴露服务。私聊未提供端到端加密，不应发送身份证件、银行卡或案件原件。
 - 用户 API Key 会存储在数据库中；正式生产环境建议进一步接入密钥加密或云端密钥管理。
 
 ## 公网部署与域名
@@ -74,6 +86,21 @@ python app.py
 然后访问 `http://localhost:5000`。
 
 可选地通过 `.env` 调整上传限制和版本标识。首次启用 OCR 时，相关模型初始化可能比普通文本解析耗时更长。
+
+## 社区、案例与私聊服务
+
+核心功能只依赖现有 SQL 数据库；Meilisearch 和 Redis 均可选。未配置
+Meilisearch 时自动使用数据库检索，未加载 Socket.IO 浏览器客户端时私聊使用
+REST 发送与轮询降级。生产辅助服务可按下列方式启动：
+
+```bash
+docker compose -f deploy/compose.services.yml up -d
+python tools/reindex_search.py
+```
+
+既有数据库建议先备份，再以 `AUTO_INIT_DB=0` 运行 `flask db upgrade`。
+开发环境保留默认的 `AUTO_INIT_DB=1` 即可自动补建新增表，并幂等写入首批已核验案例。
+Redis 和 Meilisearch 的访问地址应仅对应用内网开放；示例 Compose 只绑定本机地址。
 
 ## 回答来源
 

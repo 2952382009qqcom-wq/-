@@ -8,6 +8,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/style.css?v=20260927agent">
+<link rel="stylesheet" href="/static/css/community.css?v=20260927">
+<link rel="stylesheet" href="/static/css/cases.css?v=20260927">
+<link rel="stylesheet" href="/static/css/chat.css?v=20260927">
 </head>
 <body>
 
@@ -41,6 +44,7 @@
     <span id="header-user" class="header-user hidden">
       <span id="header-username"></span>
       <button class="btn-history" onclick="toggleAgentHistory()" title="智能体会话记录">会话</button>
+      <button class="btn-history" onclick="openChatDrawer()" title="私聊">私聊 <i id="chat-unread-badge" class="chat-unread-badge hidden">0</i></button>
       <button class="btn-logout" onclick="doLogout()" title="退出登录">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
@@ -125,6 +129,12 @@
       </button>
       <button class="nav-item" data-module="tools">
         <span class="nav-label">专业工具</span>
+      </button>
+      <button class="nav-item" data-module="community">
+        <span class="nav-label">法律社区</span>
+      </button>
+      <button class="nav-item" data-module="cases">
+        <span class="nav-label">法律案例</span>
       </button>
     </div>
   </nav>
@@ -1011,8 +1021,12 @@
       <div id="student-result" class="result-container hidden"></div>
     </section>
 
+    {% include 'modules/community.html' %}
+    {% include 'modules/cases.html' %}
   </main>
 </div>
+
+{% include 'modules/chat_drawer.html' %}
 
 <div id="contract-picker" class="modal-overlay hidden">
   <div class="contract-picker-modal">
@@ -1127,5 +1141,9 @@
 </div>
 
 <script src="/static/js/main.js?v=20260927agent"></script>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js" crossorigin="anonymous"></script>
+<script src="/static/js/community.js?v=20260927"></script>
+<script src="/static/js/cases.js?v=20260927"></script>
+<script src="/static/js/chat.js?v=20260927"></script>
 </body>
 </html>

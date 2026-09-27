@@ -1,0 +1,33 @@
+<section id="module-cases" class="module hidden cases-module">
+  <div class="cases-hero">
+    <div>
+      <span class="workspace-eyebrow">VERIFIED CASE LIBRARY</span>
+      <h2 class="module-title">法律案例</h2>
+      <p class="module-sub">来自权威公开来源的真实案例，用结构化裁判逻辑理解法律如何落地。</p>
+    </div>
+    <div class="verified-seal"><b>已核验</b><span>官方来源</span></div>
+  </div>
+  <div class="community-search-row">
+    <label class="community-search"><span>⌕</span><input id="cases-query" type="search" placeholder="搜索案由、争议焦点、关键词或案号" onkeydown="if(event.key==='Enter')loadCases()"></label>
+    <button type="button" class="btn-secondary compact" onclick="loadCases()">检索案例</button>
+  </div>
+  <div id="cases-categories" class="community-chips"></div>
+  <div class="community-toolbar">
+    <div id="cases-feeds" class="community-feed-tabs"><button type="button" class="active" data-feed="latest">最新收录</button><button type="button" data-feed="popular">热门</button><button type="button" data-feed="favorites">我的收藏</button></div>
+    <label class="personalization-switch"><input id="cases-personalization" type="checkbox" checked onchange="updateCasePersonalization(this.checked)"><span></span>个性化推荐</label>
+  </div>
+  <section id="case-recommendation-section" class="case-recommendation-section">
+    <div class="section-line-title"><div><span>FOR YOU</span><h3>为你推荐</h3></div><small>根据浏览、搜索、收藏与咨询领域动态调整</small></div>
+    <div id="case-recommendations" class="case-recommendation-strip"></div>
+  </section>
+  <div class="section-line-title"><div><span>CASE INDEX</span><h3>案例索引</h3></div><small id="cases-total"></small></div>
+  <div id="cases-list" class="cases-grid"><div class="module-loading">正在载入权威案例…</div></div>
+</section>
+
+<div id="case-detail-modal" class="mj-modal hidden" role="dialog" aria-modal="true">
+  <div class="mj-modal-backdrop" onclick="closeCaseDetail()"></div>
+  <article class="mj-modal-panel case-detail-panel">
+    <div class="mj-modal-head"><div><span class="workspace-eyebrow">CASE BRIEF</span><h3>案例研读</h3></div><button type="button" onclick="closeCaseDetail()">×</button></div>
+    <div id="case-detail-content" class="case-detail-content"></div>
+  </article>
+</div>

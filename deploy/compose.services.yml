@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - mingjian_redis:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.16
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set MEILI_MASTER_KEY}
+    volumes:
+      - mingjian_meili:/meili_data
+    ports:
+      - "127.0.0.1:7700:7700"
+
+volumes:
+  mingjian_redis:
+  mingjian_meili:

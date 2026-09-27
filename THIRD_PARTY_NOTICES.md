@@ -16,6 +16,11 @@ competition submission.
 | pypdfium2 / PDFium | 5.13.0 | Render scanned PDF pages for OCR | Apache-2.0 / BSD-style upstream notices | https://github.com/pypdfium2-team/pypdfium2 |
 | pypdf | 6.19.0 | Extract existing PDF text layers | BSD-3-Clause | https://github.com/py-pdf/pypdf |
 | Pillow | 12.3.0 | Safe image loading and normalization | HPND | https://github.com/python-pillow/Pillow |
+| Flask-SocketIO | 5.5.1 | Authenticated real-time direct messaging with REST fallback | MIT | https://github.com/miguelgrinberg/Flask-SocketIO |
+| Flask-Limiter | 3.12 | Abuse-resistant request rate limiting | MIT | https://github.com/alisaifee/flask-limiter |
+| Flask-Migrate / Alembic | 4.1.0 | Additive relational schema migrations | MIT | https://github.com/miguelgrinberg/Flask-Migrate |
+| Redis client | 6.4.0 | Optional shared Socket.IO and rate-limit backend | MIT | https://github.com/redis/redis-py |
+| Meilisearch Python SDK | 0.37.0 | Optional full-text community and case search | MIT | https://github.com/meilisearch/meilisearch-python |
 
 RapidOCR's engineering code is Apache-2.0, while its README separately states
 that OCR-model copyright belongs to Baidu. Before redistributing the Python
@@ -40,6 +45,14 @@ source code is not copied into this repository:
   verification design - https://github.com/infiniflow/ragflow
 - Legal-RAG (license metadata must be rechecked before code reuse): statute-level
   chunking and hybrid retrieval evaluation - https://github.com/Fan-Luo/Legal-RAG
+- FlaskBB (BSD-3-Clause): blueprint/service/model organization, moderation and
+  nested-discussion architecture - https://github.com/flaskbb/flaskbb
+- implicit (MIT): future collaborative-filtering upgrade path after sufficient
+  interaction data exists; no runtime code is currently vendored -
+  https://github.com/benfred/implicit
+- LeCaRD / LeCaRDv2 (MIT): legal case retrieval evaluation references only;
+  their corpora are not bundled and are not used as production case sources -
+  https://github.com/myx666/LeCaRD
 
 These references are listed for transparent provenance. Any future source-level
 reuse must add the exact commit, copied files, modifications and required

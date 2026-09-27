@@ -587,6 +587,8 @@ function switchModule(module) {
   const backButton = document.getElementById("professional-back");
   if (backButton) backButton.classList.toggle("hidden", !professionalModules.has(module));
   if (module === "home") loadAgentConversations();
+  if (module === "community" && typeof initCommunity === "function") initCommunity();
+  if (module === "cases" && typeof initCases === "function") initCases();
 
   document.querySelector(".content").scrollTop = 0;
 }
@@ -824,6 +826,13 @@ function finishAgentMessage(article, result) {
     documentButton.textContent = "导出 Word";
     documentButton.addEventListener("click", exportAgentDocument);
     tools.appendChild(documentButton);
+  }
+  if (result.conversation_id || legalAgentState.conversationId) {
+    const communityButton = document.createElement("button");
+    communityButton.type = "button";
+    communityButton.textContent = "整理为匿名求助";
+    communityButton.addEventListener("click", openAiCommunityDraft);
+    tools.appendChild(communityButton);
   }
   const exportButton = document.createElement("button");
   exportButton.type = "button";
@@ -2898,6 +2907,7 @@ function applyUserUI(u) {
     updateQuotaHint();
   }
   loadAgentConversations();
+  if (typeof initMingjianChat === "function") initMingjianChat();
 }
 
 function updateQuotaHint() {
@@ -2982,7 +2992,12 @@ async function doRegister() {
 }
 
 async function doLogout() {
+  if (typeof disconnectMingjianChat === "function") disconnectMingjianChat();
   await fetch("/api/auth/logout", { method: "POST" });
+  if (typeof closeCommunityComposer === "function") closeCommunityComposer();
+  if (typeof closeCommunityDetail === "function") closeCommunityDetail();
+  if (typeof closeCaseDetail === "function") closeCaseDetail();
+  if (typeof closeChatDrawer === "function") closeChatDrawer();
   document.getElementById("header-user").classList.add("hidden");
   document.getElementById("admin-status-group").style.display = "none";
   document.getElementById("btn-admin-panel").style.display = "none";
@@ -2994,6 +3009,7 @@ async function doLogout() {
   document.getElementById("agent-history-panel")?.classList.add("hidden");
   startNewAgentConversation();
   window._user = null;
+  switchModule("home");
   showAuth();
 }
 
