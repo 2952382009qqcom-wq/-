@@ -75,6 +75,15 @@ def upgrade():
         op.execute(sa.text("""UPDATE chat_threads SET next_sequence = COALESCE(
             (SELECT MAX(chat_messages.sequence) + 1 FROM chat_messages WHERE chat_messages.thread_id = chat_threads.id), 1
         )"""))
+        # Preserve read state from the v1 message-id cursor after assigning the
+        # new per-thread sequence numbers. Without this backfill, every old
+        # conversation would appear unread immediately after deployment.
+        if _has_table("chat_participants"):
+            op.execute(sa.text("""UPDATE chat_participants SET last_read_sequence = COALESCE(
+                (SELECT chat_messages.sequence FROM chat_messages
+                 WHERE chat_messages.id = chat_participants.last_read_message_id
+                   AND chat_messages.thread_id = chat_participants.thread_id), 0
+            ) WHERE last_read_sequence = 0 AND last_read_message_id IS NOT NULL"""))
         indexes = _indexes("chat_messages")
         if "ix_chat_messages_thread_sequence" not in indexes:
             op.create_index("ix_chat_messages_thread_sequence", "chat_messages", ["thread_id", "sequence"], unique=False)

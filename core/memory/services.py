@@ -55,9 +55,33 @@ def set_memory_enabled(user_id, enabled):
 def create_memory(user_id, content, memory_type, *, conversation_id=None, message_id=None, reason="用户主动保存"):
     if not memory_enabled(user_id):
         raise ValueError("长期记忆默认关闭，请先主动开启")
+    memory_type = str(memory_type or "")
     if memory_type not in ALLOWED_MEMORY_TYPES:
         raise ValueError("不支持的记忆类型")
     safe = sanitize_memory_content(content)
+
+    conversation_id = str(conversation_id).strip() if conversation_id else None
+    owned_conversation = None
+    if conversation_id:
+        owned_conversation = Conversation.query.filter_by(id=conversation_id, user_id=user_id).first()
+        if owned_conversation is None:
+            raise ValueError("来源对话不存在或不属于当前用户")
+    if message_id is not None:
+        try:
+            message_id = int(message_id)
+        except (TypeError, ValueError):
+            raise ValueError("来源消息无效") from None
+        source_message = ConversationMessage.query.join(
+            Conversation, Conversation.id == ConversationMessage.conversation_id
+        ).filter(
+            ConversationMessage.id == message_id,
+            Conversation.user_id == user_id,
+        ).first()
+        if source_message is None:
+            raise ValueError("来源消息不存在或不属于当前用户")
+        if owned_conversation and source_message.conversation_id != owned_conversation.id:
+            raise ValueError("来源消息不属于所选对话")
+        conversation_id = source_message.conversation_id
 
     item = UserMemoryItem(
         user_id=user_id, memory_type=memory_type, legal_domain=infer_legal_domain(safe), content=safe,
@@ -71,7 +95,9 @@ def create_memory(user_id, content, memory_type, *, conversation_id=None, messag
 
 
 def sanitize_memory_content(content):
-    content = str(content or "").strip()
+    if not isinstance(content, str):
+        raise ValueError("记忆内容必须是文本")
+    content = content.strip()
     if not content or len(content) > 1000 or SENSITIVE_PATTERNS.search(content):
         raise ValueError("内容为空、过长或包含不应长期保存的敏感信息")
     safe = RedactionSession().redact(content)

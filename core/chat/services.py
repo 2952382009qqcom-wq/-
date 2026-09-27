@@ -79,17 +79,20 @@ def serialize_message(message):
 
 def serialize_thread(thread, user_id):
     other = other_participant(thread.id, user_id)
-    last = ChatMessage.query.filter_by(thread_id=thread.id).order_by(ChatMessage.sequence.desc()).first()
+    hidden_ids = db.session.query(ChatMessageHidden.message_id).filter(ChatMessageHidden.user_id == user_id)
+    last = ChatMessage.query.filter(
+        ChatMessage.thread_id == thread.id,
+        ~ChatMessage.id.in_(hidden_ids),
+    ).order_by(ChatMessage.sequence.desc()).first()
     me = participant_for(thread.id, user_id)
     unread_query = ChatMessage.query.filter(
         ChatMessage.thread_id == thread.id,
         ChatMessage.sender_id != user_id,
         ChatMessage.status.in_(("sent", "delivered")),
+        ~ChatMessage.id.in_(hidden_ids),
     )
-    if me and me.last_read_message_id:
-        marker = ChatMessage.query.get(me.last_read_message_id)
-        if marker:
-            unread_query = unread_query.filter(ChatMessage.created_at > marker.created_at)
+    if me:
+        unread_query = unread_query.filter(ChatMessage.sequence > int(me.last_read_sequence or 0))
     return {
         "id": thread.id,
         "other_user": {"id": other.user.id, "username": other.user.username} if other and other.user else None,
@@ -124,7 +127,9 @@ def create_message(thread_id, sender_id, body, *, client_message_id=None, reply_
         raise ValueError("消息不能为空")
     if len(body) > 4000:
         raise ValueError("单条消息不能超过4000字")
-    if message_type not in {"text", "image", "attachment", "system"}:
+    # System messages are reserved for trusted server-side workflows. Public
+    # HTTP/Socket callers must never be able to impersonate them.
+    if message_type not in {"text", "image", "attachment"}:
         raise ValueError("消息类型无效")
     reply = None
     if reply_to_id:

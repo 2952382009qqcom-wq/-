@@ -4,7 +4,9 @@ from flask_socketio import disconnect, emit, join_room, leave_room
 from core.extensions import socketio
 from core.notifications.services import enqueue_notification
 
-from .models import ChatMessage, ChatParticipant
+from core.models import db
+
+from .models import ChatMessage, ChatMessageHidden, ChatParticipant
 from .services import create_message, mark_read, other_participant, participant_for, serialize_message
 
 
@@ -70,7 +72,7 @@ def chat_send(data):
     recipient = other_participant(thread_id, current_user.id)
     if recipient:
         emit("chat_message", payload, to=f"user:{recipient.user_id}")
-        enqueue_notification(recipient.user_id, "chat_message", "收到一条新私信", "打开明鉴查看消息", route=f"/chat?thread={thread_id}", idempotency_key=f"chat:{message.id}")
+        enqueue_notification(recipient.user_id, "chat_message", "收到一条新私信", "打开明鉴查看消息", route=f"/?chat=1&thread={thread_id}", idempotency_key=f"chat:{message.id}")
     return {"ok": True, "message": payload}
 
 
@@ -84,7 +86,11 @@ def chat_sync(data):
     except (TypeError, ValueError):
         after = 0
     rows = ChatMessage.query.filter(
-        ChatMessage.thread_id == thread_id, ChatMessage.sequence > after
+        ChatMessage.thread_id == thread_id,
+        ChatMessage.sequence > after,
+        ~ChatMessage.id.in_(
+            db.session.query(ChatMessageHidden.message_id).filter(ChatMessageHidden.user_id == current_user.id)
+        ),
     ).order_by(ChatMessage.sequence.asc()).limit(200).all()
     return {"ok": True, "messages": [serialize_message(row) for row in rows], "has_more": len(rows) == 200}
 

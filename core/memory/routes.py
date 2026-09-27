@@ -21,7 +21,10 @@ def _serialize(row):
 @login_required
 def settings():
     if request.method == "PUT":
-        set_memory_enabled(current_user.id, bool((request.get_json(silent=True) or {}).get("enabled")))
+        enabled = (request.get_json(silent=True) or {}).get("enabled")
+        if not isinstance(enabled, bool):
+            return jsonify({"error": "enabled 必须是布尔值"}), 400
+        set_memory_enabled(current_user.id, enabled)
     return jsonify({"enabled": memory_enabled(current_user.id)})
 
 

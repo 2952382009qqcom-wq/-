@@ -1,6 +1,6 @@
 const chatState = {
   socket: null, threads: [], activeThreadId: null, messages: [], searchTimer: null,
-  pollingTimer: null, typingTimer: null, replyTo: null, hasMore: false, onlineUsers: new Set(),
+  pollingTimer: null, typingTimer: null, replyTo: null, hasMore: false, onlineUsers: new Set(), deepLinkHandled: false,
 };
 
 async function chatFetch(url, options = {}) {
@@ -30,7 +30,10 @@ function initMingjianChat() {
       if (message.thread_id === chatState.activeThreadId) { mergeChatMessages([message]); renderChatMessages(); markChatRead(); }
       loadChatThreads();
     });
-    chatState.socket.on("chat_message_updated", message => { mergeChatMessages([message]); renderChatMessages(); });
+    chatState.socket.on("chat_message_updated", message => {
+      if (message.thread_id === chatState.activeThreadId) { mergeChatMessages([message]); renderChatMessages(); }
+      loadChatThreads();
+    });
     chatState.socket.on("chat_typing", event => { if (event.thread_id === chatState.activeThreadId) showTyping(event.typing); });
     chatState.socket.on("chat_presence", event => {
       if (event.online) chatState.onlineUsers.add(Number(event.user_id)); else chatState.onlineUsers.delete(Number(event.user_id));
@@ -38,7 +41,7 @@ function initMingjianChat() {
     });
     chatState.socket.on("chat_error", event => alert(event.error || "消息发送失败"));
   }
-  loadChatThreads();
+  loadChatThreads().then(openChatDeepLink);
 }
 
 function disconnectMingjianChat() {
@@ -55,6 +58,18 @@ async function loadChatThreads() {
     const unread = chatState.threads.reduce((sum, item) => sum + Number(item.unread_count || 0), 0);
     const badge = document.getElementById("chat-unread-badge"); badge.textContent = unread > 99 ? "99+" : unread; badge.classList.toggle("hidden", !unread);
   } catch (_) {}
+}
+
+async function openChatDeepLink() {
+  if (chatState.deepLinkHandled || !window._user) return;
+  const params = new URLSearchParams(window.location.search);
+  const threadId = params.get("thread");
+  if (params.get("chat") !== "1" || !threadId) return;
+  chatState.deepLinkHandled = true;
+  document.getElementById("chat-overlay").classList.remove("hidden");
+  document.getElementById("chat-drawer").classList.remove("hidden");
+  await openChatThread(threadId);
+  window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
 }
 
 function renderChatThreads() {

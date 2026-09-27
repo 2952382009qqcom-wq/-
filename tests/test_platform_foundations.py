@@ -2,7 +2,9 @@
 
 from datetime import datetime
 from unittest import mock
+import io
 import os
+import tempfile
 import uuid
 
 with mock.patch.dict(os.environ, {"DATABASE_URL": "sqlite:///:memory:", "SECRET_KEY": "platform-v2-test-secret", "AUTO_SEED_REFERENCE_DATA": "1"}):
@@ -11,9 +13,9 @@ from core.chat.models import ChatMessage, ChatParticipant
 from core.memory.models import UserMemoryItem
 from core.memory.models import ConversationSummary
 from core.memory.services import rebuild_summary
-from core.models import Conversation, ConversationMessage, db
+from core.models import Conversation, ConversationMessage, User, db
 from core.notifications.adapters import PermanentDeliveryError, TemporaryDeliveryError
-from core.notifications.models import NotificationDelivery, PushDevice
+from core.notifications.models import NotificationDelivery, NotificationOutbox, PushDevice
 from core.notifications.services import enqueue_notification, process_outbox_item, register_device
 from core.recommendations.models import RecommendationImpression, UserActivityEvent
 
@@ -86,6 +88,55 @@ def test_socket_rejects_outsider_and_incremental_sync_has_no_duplicates():
     assert ack["ok"] and len({item["id"] for item in ack["messages"]}) == len(ack["messages"])
 
 
+def test_hidden_chat_messages_stay_hidden_in_search_sync_preview_and_unread_count():
+    left_client, right_client, _, _, thread_id = make_thread()
+    created = left_client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"body": "只对收件人隐藏的检索词", "client_message_id": f"hidden-{uuid.uuid4()}"},
+    ).get_json()["message"]
+    assert right_client.delete(f"/api/chat/messages/{created['id']}").status_code == 200
+    assert right_client.get(f"/api/chat/threads/{thread_id}/search?q=检索词").get_json()["messages"] == []
+
+    socket_client = app_module.socketio.test_client(
+        app_module.app, flask_test_client=right_client, namespace="/chat"
+    )
+    synced = socket_client.emit(
+        "sync_messages", {"thread_id": thread_id, "after_sequence": 0},
+        namespace="/chat", callback=True,
+    )
+    assert synced["ok"] and synced["messages"] == []
+    thread = next(item for item in right_client.get("/api/chat/threads").get_json()["threads"] if item["id"] == thread_id)
+    assert thread["last_message"] is None and thread["unread_count"] == 0
+
+
+def test_public_chat_cannot_spoof_system_message_and_attachment_reaches_user_room():
+    left_client, right_client, _, _, thread_id = make_thread()
+    rejected = left_client.post(
+        f"/api/chat/threads/{thread_id}/messages",
+        json={"body": "伪造系统公告", "message_type": "system"},
+    )
+    assert rejected.status_code == 400
+
+    recipient_socket = app_module.socketio.test_client(
+        app_module.app, flask_test_client=right_client, namespace="/chat"
+    )
+    recipient_socket.get_received("/chat")
+    with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+        os.environ, {"CHAT_ATTACHMENT_ROOT": directory}
+    ):
+        uploaded = left_client.post(
+            f"/api/chat/threads/{thread_id}/attachments",
+            data={
+                "file": (io.BytesIO(b"%PDF-1.4\n%%EOF"), "proof.pdf"),
+                "client_message_id": f"attachment-{uuid.uuid4()}",
+            },
+            content_type="multipart/form-data",
+        )
+    assert uploaded.status_code == 201
+    events = recipient_socket.get_received("/chat")
+    assert any(event["name"] == "chat_message" and event["args"][0]["message_type"] == "attachment" for event in events)
+
+
 def test_memory_default_off_isolated_and_user_can_delete():
     first_client, second_client = app_module.app.test_client(), app_module.app.test_client()
     first, second = register(first_client, "memory-first"), register(second_client, "memory-second")
@@ -101,6 +152,28 @@ def test_memory_default_off_isolated_and_user_can_delete():
     with app_module.app.app_context():
         row = UserMemoryItem.query.get(memory_id)
         assert row.user_id == first["id"] and row.user_id != second["id"] and row.deleted_at is not None
+
+
+def test_memory_source_must_belong_to_current_user_and_settings_require_boolean():
+    first_client, second_client = app_module.app.test_client(), app_module.app.test_client()
+    first, second = register(first_client, "memory-owner"), register(second_client, "memory-source")
+    assert first_client.put("/api/memory/settings", json={"enabled": "false"}).status_code == 400
+    assert first_client.put("/api/memory/settings", json={"enabled": True}).status_code == 200
+    conversation_id = str(uuid.uuid4())
+    with app_module.app.app_context():
+        db.session.add(Conversation(id=conversation_id, user_id=second["id"], title="他人的对话"))
+        db.session.flush()
+        message = ConversationMessage(conversation_id=conversation_id, role="user", content="不应被关联")
+        db.session.add(message)
+        db.session.commit()
+        message_id = message.id
+    rejected = first_client.post("/api/memory/items", json={
+        "memory_type": "stable_fact",
+        "content": "只保存我自己的来源",
+        "conversation_id": conversation_id,
+        "message_id": message_id,
+    })
+    assert rejected.status_code == 400
 
 
 def test_notification_outbox_retry_and_invalid_token_deactivation():
@@ -120,6 +193,53 @@ def test_notification_outbox_retry_and_invalid_token_deactivation():
         device = PushDevice.query.filter_by(user_id=user["id"]).one()
         assert device.active is False
         assert NotificationDelivery.query.filter_by(outbox_id=retry_row.id, channel="in_app").count() == 1
+    notifications = client.get("/api/notifications").get_json()["notifications"]
+    assert notifications and notifications[0]["title"] == "标题" and notifications[0]["route"] == "/"
+
+
+def test_quiet_hours_keep_in_app_delivery_and_notification_preferences_are_validated():
+    client = app_module.app.test_client()
+    user = register(client, "notify-preferences")
+    assert client.put("/api/notifications/preferences", json={"push_enabled": "false"}).status_code == 400
+    assert client.put("/api/notifications/preferences", json={"timezone": "not/a-zone"}).status_code == 400
+    assert client.put("/api/notifications/preferences", json={
+        "push_enabled": True,
+        "quiet_start": "22:00",
+        "quiet_end": "07:00",
+        "timezone": "Asia/Shanghai",
+    }).status_code == 200
+    with app_module.app.app_context():
+        row = enqueue_notification(user["id"], "test", "安静时段", "仍应站内可见", idempotency_key=f"quiet-{uuid.uuid4()}")
+        with mock.patch("core.notifications.services._quiet_now", return_value=True):
+            process_outbox_item(row.id)
+        assert row.status == "retry"
+        assert NotificationDelivery.query.filter_by(outbox_id=row.id, channel="in_app").count() == 1
+
+
+def test_account_deletion_clears_new_private_memory_and_notification_data():
+    admin_client, target_client = app_module.app.test_client(), app_module.app.test_client()
+    admin, target = register(admin_client, "cleanup-admin"), register(target_client, "cleanup-target")
+    with app_module.app.app_context():
+        admin_row = User.query.get(admin["id"])
+        admin_row.is_admin = True
+        db.session.commit()
+    target_client.put("/api/memory/settings", json={"enabled": True})
+    assert target_client.post("/api/memory/items", json={
+        "memory_type": "preference", "content": "删除账号时一并清理",
+    }).status_code == 201
+    with app_module.app.app_context():
+        outbox = enqueue_notification(
+            target["id"], "test", "待清理", "私密通知", idempotency_key=f"delete-{uuid.uuid4()}"
+        )
+        process_outbox_item(outbox.id)
+
+    deleted = admin_client.post(f"/api/admin/delete-user/{target['id']}")
+    assert deleted.status_code == 200
+    with app_module.app.app_context():
+        assert User.query.get(target["id"]) is None
+        assert UserMemoryItem.query.filter_by(user_id=target["id"]).count() == 0
+        assert NotificationOutbox.query.filter_by(user_id=target["id"]).count() == 0
+        assert NotificationDelivery.query.filter_by(user_id=target["id"]).count() == 0
 
 
 def test_prompt_sections_treat_injected_memory_as_untrusted():

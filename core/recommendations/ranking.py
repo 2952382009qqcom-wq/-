@@ -15,7 +15,12 @@ from .recall import recall_candidates
 
 
 def _tokens(value):
-    return set(re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z0-9]{3,}", str(value or "").lower()))
+    tokens = set(re.findall(r"[a-zA-Z0-9]{3,}", str(value or "").lower()))
+    for chunk in re.findall(r"[\u4e00-\u9fff]+", str(value or "")):
+        if len(chunk) <= 4:
+            tokens.add(chunk)
+        tokens.update(chunk[index:index + 2] for index in range(len(chunk) - 1))
+    return tokens
 
 
 def _freshness(item):

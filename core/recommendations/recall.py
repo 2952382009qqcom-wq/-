@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 from datetime import datetime, timedelta
+import re
 
 from core.cases.models import CaseFavorite, LegalCase
 from core.search.client import search_ids
@@ -11,6 +12,21 @@ from .models import UserActivityEvent
 
 def _published_query():
     return LegalCase.query.filter_by(status="published", verification_status="verified")
+
+
+def _keyword_terms(value, limit=8):
+    """Create bounded Chinese bigrams/Latin terms for database fallback recall."""
+    terms = []
+    for chunk in re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9]{3,}", str(value or "").lower()):
+        candidates = [chunk] if not re.fullmatch(r"[\u4e00-\u9fff]+", chunk) or len(chunk) <= 4 else [
+            chunk[index:index + 2] for index in range(len(chunk) - 1)
+        ]
+        for term in candidates:
+            if term not in terms:
+                terms.append(term)
+            if len(terms) >= limit:
+                return terms
+    return terms
 
 
 def recall_candidates(user_id, *, domain_weights=None, context_text="", domain="", limit=120):
@@ -52,10 +68,10 @@ def recall_candidates(user_id, *, domain_weights=None, context_text="", domain="
             add(_published_query().filter(LegalCase.legal_domain.in_(event_domains)).limit(35).all(), "recent_activity")
 
     # Keyword recall stays database-safe; Meilisearch remains the primary search API.
-    terms = [term for term in str(context_text or "").split() if len(term) >= 2][:5]
+    terms = _keyword_terms(context_text)
     if terms:
         ids = search_ids(
-            "legal_cases", " ".join(terms),
+            "legal_cases", str(context_text or "")[:120],
             filters="status = published AND verification_status = verified", limit=40,
         )
         if ids is not None:
@@ -66,7 +82,10 @@ def recall_candidates(user_id, *, domain_weights=None, context_text="", domain="
         patterns = []
         for term in terms:
             escaped = term.replace("%", "\\%").replace("_", "\\_")
-            patterns.extend((LegalCase.title.ilike(f"%{escaped}%"), LegalCase.keywords.ilike(f"%{escaped}%")))
+            patterns.extend((
+                LegalCase.title.ilike(f"%{escaped}%", escape="\\"),
+                LegalCase.keywords.ilike(f"%{escaped}%", escape="\\"),
+            ))
         add(_published_query().filter(or_(*patterns)).limit(30).all(), "keyword")
 
     add(_published_query().order_by(LegalCase.favorite_count.desc(), LegalCase.view_count.desc()).limit(30).all(), "popular_fallback")

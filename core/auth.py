@@ -180,7 +180,18 @@ def delete_user(user_id):
     # Keep public discussions useful while removing the account link, and
     # remove private/personal records that should not survive account deletion.
     from core.cases.models import CaseFavorite, LegalCase
-    from core.chat.models import ChatMessage, ChatParticipant, ChatThread, UserBlock
+    from core.chat.models import (
+        ChatAttachment,
+        ChatAuditLog,
+        ChatMessage,
+        ChatMessageHidden,
+        ChatParticipant,
+        ChatReport,
+        ChatThread,
+        ChatUserSanction,
+        UserBlock,
+    )
+    from core.chat.storage import LocalAttachmentStorage
     from core.community.models import (
         CommunityComment,
         CommunityCommentLike,
@@ -191,16 +202,70 @@ def delete_user(user_id):
         ModerationAction,
         Notification,
     )
+    from core.memory.models import (
+        ConversationSummary,
+        UserMemoryAudit,
+        UserMemoryEmbedding,
+        UserMemoryItem,
+        UserMemorySetting,
+    )
+    from core.models import Conversation, ConversationMessage
+    from core.notifications.models import (
+        NotificationDelivery,
+        NotificationOutbox,
+        NotificationPreference,
+        PushDevice,
+    )
     from core.recommendations.models import RecommendationImpression, UserActivityEvent, UserInterestProfile
 
     thread_ids = [row.thread_id for row in ChatParticipant.query.filter_by(user_id=user.id).all()]
+    attachment_keys = []
     if thread_ids:
+        message_ids = [row[0] for row in db.session.query(ChatMessage.id).filter(ChatMessage.thread_id.in_(thread_ids)).all()]
+        if message_ids:
+            attachment_keys = [row[0] for row in db.session.query(ChatAttachment.storage_key).filter(ChatAttachment.message_id.in_(message_ids)).all()]
+            ChatReport.query.filter(ChatReport.message_id.in_(message_ids)).delete(synchronize_session=False)
+            ChatMessageHidden.query.filter(ChatMessageHidden.message_id.in_(message_ids)).delete(synchronize_session=False)
+            ChatAttachment.query.filter(ChatAttachment.message_id.in_(message_ids)).delete(synchronize_session=False)
         ChatMessage.query.filter(ChatMessage.thread_id.in_(thread_ids)).delete(synchronize_session=False)
         ChatParticipant.query.filter(ChatParticipant.thread_id.in_(thread_ids)).delete(synchronize_session=False)
         ChatThread.query.filter(ChatThread.id.in_(thread_ids)).delete(synchronize_session=False)
+    ChatReport.query.filter_by(reporter_id=user.id).delete(synchronize_session=False)
+    ChatAuditLog.query.filter_by(actor_id=user.id).update({"actor_id": None}, synchronize_session=False)
+    ChatUserSanction.query.filter_by(moderator_id=user.id).update({"moderator_id": None}, synchronize_session=False)
+    ChatUserSanction.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     UserBlock.query.filter(
         (UserBlock.blocker_id == user.id) | (UserBlock.blocked_id == user.id)
     ).delete(synchronize_session=False)
+
+    conversation_ids = [row[0] for row in db.session.query(Conversation.id).filter_by(user_id=user.id).all()]
+    conversation_message_ids = []
+    if conversation_ids:
+        conversation_message_ids = [row[0] for row in db.session.query(ConversationMessage.id).filter(
+            ConversationMessage.conversation_id.in_(conversation_ids)
+        ).all()]
+        UserMemoryItem.query.filter(UserMemoryItem.source_conversation_id.in_(conversation_ids)).update(
+            {"source_conversation_id": None}, synchronize_session=False
+        )
+    if conversation_message_ids:
+        UserMemoryItem.query.filter(UserMemoryItem.source_message_id.in_(conversation_message_ids)).update(
+            {"source_message_id": None}, synchronize_session=False
+        )
+    memory_ids = [row[0] for row in db.session.query(UserMemoryItem.id).filter_by(user_id=user.id).all()]
+    if memory_ids:
+        UserMemoryEmbedding.query.filter(UserMemoryEmbedding.memory_id.in_(memory_ids)).delete(synchronize_session=False)
+    UserMemoryAudit.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    UserMemoryItem.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    UserMemorySetting.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    ConversationSummary.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+
+    outbox_ids = [row[0] for row in db.session.query(NotificationOutbox.id).filter_by(user_id=user.id).all()]
+    if outbox_ids:
+        NotificationDelivery.query.filter(NotificationDelivery.outbox_id.in_(outbox_ids)).delete(synchronize_session=False)
+    NotificationDelivery.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    NotificationOutbox.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    NotificationPreference.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    PushDevice.query.filter_by(user_id=user.id).delete(synchronize_session=False)
 
     CommunityPost.query.filter_by(author_id=user.id).update({"author_id": None}, synchronize_session=False)
     CommunityComment.query.filter_by(author_id=user.id).update({"author_id": None}, synchronize_session=False)
@@ -225,6 +290,14 @@ def delete_user(user_id):
     AnalysisRecord.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     db.session.delete(user)
     db.session.commit()
+    storage = LocalAttachmentStorage()
+    for key in attachment_keys:
+        try:
+            storage.delete(key)
+        except OSError:
+            # The account and database rows are already deleted; a storage
+            # lifecycle job can retry removal without restoring private data.
+            pass
     return jsonify({'status': 'ok', 'message': f'已删除用户 {user.username}'})
 
 

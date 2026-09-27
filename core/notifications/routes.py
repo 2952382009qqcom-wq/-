@@ -1,11 +1,12 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
 
 from core.models import db
 
-from .models import NotificationDelivery, NotificationPreference, PushDevice
+from .models import NotificationDelivery, NotificationOutbox, NotificationPreference, PushDevice
 from .services import register_device
 
 
@@ -15,8 +16,22 @@ notifications_bp = Blueprint("notifications", __name__, url_prefix="/api/notific
 @notifications_bp.get("")
 @login_required
 def list_notifications():
-    rows = NotificationDelivery.query.filter_by(user_id=current_user.id, channel="in_app").order_by(NotificationDelivery.created_at.desc()).limit(100).all()
-    return jsonify({"notifications": [{"id": row.id, "status": row.status, "read_at": row.read_at.isoformat() if row.read_at else None, "created_at": row.created_at.isoformat()} for row in rows]})
+    rows = db.session.query(NotificationDelivery, NotificationOutbox).join(
+        NotificationOutbox, NotificationOutbox.id == NotificationDelivery.outbox_id
+    ).filter(
+        NotificationDelivery.user_id == current_user.id,
+        NotificationDelivery.channel == "in_app",
+    ).order_by(NotificationDelivery.created_at.desc()).limit(100).all()
+    return jsonify({"notifications": [{
+        "id": delivery.id,
+        "event_type": outbox.event_type,
+        "title": outbox.title,
+        "body": outbox.body,
+        "route": outbox.route,
+        "status": delivery.status,
+        "read_at": delivery.read_at.isoformat() if delivery.read_at else None,
+        "created_at": delivery.created_at.isoformat(),
+    } for delivery, outbox in rows]})
 
 
 @notifications_bp.post("/<notification_id>/read")
@@ -63,9 +78,26 @@ def preferences():
         data = request.get_json(silent=True) or {}
         for key in ("in_app_enabled", "push_enabled", "generic_lock_screen"):
             if key in data:
-                setattr(row, key, bool(data[key]))
-        for key in ("quiet_start", "quiet_end", "timezone"):
+                if not isinstance(data[key], bool):
+                    return jsonify({"error": f"{key} 必须是布尔值"}), 400
+                setattr(row, key, data[key])
+        for key in ("quiet_start", "quiet_end"):
             if key in data:
-                setattr(row, key, str(data[key] or "")[:40] or None)
+                value = str(data[key] or "").strip()
+                try:
+                    if value and datetime.strptime(value, "%H:%M").strftime("%H:%M") != value:
+                        raise ValueError
+                except ValueError:
+                    return jsonify({"error": f"{key} 必须使用 HH:MM 格式"}), 400
+                setattr(row, key, value or None)
+        if "timezone" in data:
+            timezone = str(data["timezone"] or "").strip()[:40]
+            if not timezone:
+                return jsonify({"error": "timezone 不是有效的 IANA 时区"}), 400
+            try:
+                ZoneInfo(timezone)
+            except (ZoneInfoNotFoundError, ValueError):
+                return jsonify({"error": "timezone 不是有效的 IANA 时区"}), 400
+            row.timezone = timezone
         db.session.commit()
     return jsonify({"in_app_enabled": row.in_app_enabled, "push_enabled": row.push_enabled, "generic_lock_screen": row.generic_lock_screen, "quiet_start": row.quiet_start, "quiet_end": row.quiet_end, "timezone": row.timezone})

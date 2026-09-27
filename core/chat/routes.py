@@ -116,7 +116,7 @@ def send_message_fallback(thread_id):
         socketio.emit("chat_message", payload, to=f"user:{recipient.user_id}", namespace="/chat")
         enqueue_notification(
             recipient.user_id, "chat_message", "收到一条新私信", "打开明鉴查看消息",
-            route=f"/chat?thread={thread_id}", idempotency_key=f"chat:{message.id}",
+            route=f"/?chat=1&thread={thread_id}", idempotency_key=f"chat:{message.id}",
         )
     return jsonify({"status": "ok", "message": payload}), 201
 
@@ -158,7 +158,8 @@ def send_attachment(thread_id):
     socketio.emit("chat_message", payload, to=f"chat:{thread_id}", namespace="/chat")
     recipient = other_participant(thread_id, current_user.id)
     if recipient:
-        enqueue_notification(recipient.user_id, "chat_message", "收到一个新附件", "打开明鉴查看详情", route=f"/chat?thread={thread_id}", idempotency_key=f"chat:{message.id}")
+        socketio.emit("chat_message", payload, to=f"user:{recipient.user_id}", namespace="/chat")
+        enqueue_notification(recipient.user_id, "chat_message", "收到一个新附件", "打开明鉴查看详情", route=f"/?chat=1&thread={thread_id}", idempotency_key=f"chat:{message.id}")
     return jsonify({"status": "ok", "message": payload}), 201
 
 
@@ -240,9 +241,13 @@ def search_messages(thread_id):
     query = request.args.get("q", "").strip()[:80]
     if not query:
         return jsonify({"messages": []})
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     rows = ChatMessage.query.filter(
         ChatMessage.thread_id == thread_id, ChatMessage.status.in_(("sent", "delivered")),
-        ChatMessage.body.ilike(f"%{query.replace('%', '')}%"),
+        ~ChatMessage.id.in_(
+            db.session.query(ChatMessageHidden.message_id).filter(ChatMessageHidden.user_id == current_user.id)
+        ),
+        ChatMessage.body.ilike(f"%{escaped}%", escape="\\"),
     ).order_by(ChatMessage.sequence.desc()).limit(50).all()
     return jsonify({"messages": [serialize_message(row) for row in rows]})
 
@@ -310,13 +315,18 @@ def moderate_message(message_id):
 def sanction_user(user_id):
     if not _admin_only():
         return jsonify({"error": "需要管理员权限"}), 403
+    if User.query.get(user_id) is None:
+        return jsonify({"error": "用户不存在"}), 404
     data = request.get_json(silent=True) or {}
     action = str(data.get("action", ""))
     row = ChatUserSanction.query.get(user_id) or ChatUserSanction(user_id=user_id)
     if action == "ban":
         row.banned_at = datetime.utcnow()
     elif action == "mute":
-        minutes = max(1, min(int(data.get("minutes", 60)), 43200))
+        try:
+            minutes = max(1, min(int(data.get("minutes", 60)), 43200))
+        except (TypeError, ValueError):
+            return jsonify({"error": "禁言时长必须是分钟数"}), 400
         from datetime import timedelta
         row.muted_until = datetime.utcnow() + timedelta(minutes=minutes)
     elif action == "clear":

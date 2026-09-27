@@ -12,7 +12,7 @@ from core.notifications.services import process_outbox_item
 @celery.task(name="mingjian.process_notification_outbox", autoretry_for=(OSError,), retry_backoff=True, max_retries=5)
 def process_notification_outbox(batch_size=100):
     rows = NotificationOutbox.query.filter(
-        NotificationOutbox.status.in_(("pending", "retry")),
+        NotificationOutbox.status.in_(("pending", "retry", "processing")),
         NotificationOutbox.next_attempt_at <= datetime.utcnow(),
     ).order_by(NotificationOutbox.next_attempt_at.asc()).limit(min(int(batch_size), 500)).all()
     for row in rows:

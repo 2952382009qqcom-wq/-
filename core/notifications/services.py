@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 
 from core.models import db
 
@@ -14,6 +16,13 @@ def register_device(user_id, platform, token):
     if platform not in ADAPTERS or not token or len(token) > 4096:
         raise ValueError("设备平台或令牌无效")
     digest = token_hash(token)
+    # A physical push token must belong to only the currently authenticated
+    # account. Otherwise signing out and into another account on the same
+    # device could leak the previous account's legal notifications.
+    PushDevice.query.filter(
+        PushDevice.token_hash == digest,
+        PushDevice.user_id != user_id,
+    ).update({"active": False}, synchronize_session=False)
     row = PushDevice.query.filter_by(user_id=user_id, token_hash=digest).first()
     if row is None:
         row = PushDevice(user_id=user_id, platform=platform, token_hash=digest, encrypted_token=encrypt_token(token))
@@ -51,7 +60,14 @@ def enqueue_notification(user_id, event_type, title, body, route="/", payload=No
         route=str(route or "/")[:255], payload_json=json.dumps(payload or {}, ensure_ascii=False), idempotency_key=key,
     )
     db.session.add(row)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing = NotificationOutbox.query.filter_by(idempotency_key=key).first()
+        if existing is not None:
+            return existing
+        raise
     return row
 
 
@@ -77,18 +93,44 @@ def _quiet_now(preference):
 def process_outbox_item(outbox_id, now=None):
     now = now or datetime.utcnow()
     row = NotificationOutbox.query.get(str(outbox_id))
-    if row is None or row.status in {"sent", "failed"} or row.next_attempt_at > now:
+    if row is None or row.status in {"sent", "failed"}:
         return row
+    # Claim with a lease before contacting an external provider. Multiple
+    # Celery workers may see the same due row, but only one can transition it
+    # to processing. An expired lease is recoverable after a worker crash.
+    claimed = NotificationOutbox.query.filter(
+        NotificationOutbox.id == row.id,
+        or_(
+            and_(
+                NotificationOutbox.status.in_(("pending", "retry")),
+                NotificationOutbox.next_attempt_at <= now,
+            ),
+            and_(
+                NotificationOutbox.status == "processing",
+                NotificationOutbox.next_attempt_at <= now,
+            ),
+        ),
+    ).update({
+        "status": "processing",
+        "next_attempt_at": now + timedelta(minutes=5),
+    }, synchronize_session=False)
+    db.session.commit()
+    if not claimed:
+        db.session.refresh(row)
+        return row
+    row = NotificationOutbox.query.get(str(outbox_id))
     preference = NotificationPreference.query.get(row.user_id)
+    # In-app delivery is durable even when push is disabled or unavailable.
+    in_app = NotificationDelivery.query.filter_by(outbox_id=row.id, channel="in_app").first()
+    if in_app is None and (preference is None or preference.in_app_enabled):
+        db.session.add(NotificationDelivery(outbox_id=row.id, user_id=row.user_id, channel="in_app", status="delivered", delivered_at=now))
+    # Quiet hours delay only lock-screen/device pushes; users who open the app
+    # should still see the durable in-app notification immediately.
     if _quiet_now(preference):
         row.status = "retry"
         row.next_attempt_at = now + timedelta(minutes=30)
         db.session.commit()
         return row
-    # In-app delivery is durable even when push is disabled or unavailable.
-    in_app = NotificationDelivery.query.filter_by(outbox_id=row.id, channel="in_app").first()
-    if in_app is None and (preference is None or preference.in_app_enabled):
-        db.session.add(NotificationDelivery(outbox_id=row.id, user_id=row.user_id, channel="in_app", status="delivered", delivered_at=now))
     devices = PushDevice.query.filter_by(user_id=row.user_id, active=True).all()
     temporary = False
     if preference is None or preference.push_enabled:
@@ -103,7 +145,9 @@ def process_outbox_item(outbox_id, now=None):
                 delivery.status, delivery.delivered_at = "delivered", now
             except PermanentDeliveryError as error:
                 device.active, delivery.status, delivery.error_code = False, "failed", str(error)[:80]
-            except (TemporaryDeliveryError, ValueError) as error:
+            except ValueError:
+                device.active, delivery.status, delivery.error_code = False, "failed", "token_decryption_failed"
+            except TemporaryDeliveryError as error:
                 temporary, delivery.status, delivery.error_code = True, "retry", str(error)[:80]
     if temporary and row.retry_count < row.max_retries:
         row.retry_count += 1
