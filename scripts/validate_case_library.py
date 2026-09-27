@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = ROOT / "data" / "legal_cases_200.json"
+DATA_PATH = ROOT / "data" / "legal_cases_500.json"
 REQUIRED_TEXT = (
     "slug", "title", "summary", "dispute_focus", "judgment_result",
     "judgment_reasoning", "ai_plain_language", "source_external_id", "source_url",
@@ -20,10 +21,13 @@ def validate() -> dict:
     payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
     cases = payload.get("cases") or []
     errors: list[str] = []
-    if payload.get("case_count") != 193 or len(cases) != 193:
-        errors.append(f"expected 193 supplemental cases, got {len(cases)}")
-    if payload.get("total_with_core_cases") != 200:
-        errors.append("total_with_core_cases must be 200")
+    if payload.get("case_count") != 493 or len(cases) != 493:
+        errors.append(f"expected 493 supplemental cases, got {len(cases)}")
+    if payload.get("total_with_core_cases") != 500:
+        errors.append("total_with_core_cases must be 500")
+    source_types = Counter(case.get("source_type") for case in cases)
+    if source_types != {"official_court_guiding": 271, "official_court_gazette": 222}:
+        errors.append(f"unexpected source mix: {dict(source_types)}")
 
     for index, case in enumerate(cases, 1):
         label = case.get("source_external_id") or f"row-{index}"
@@ -31,9 +35,19 @@ def validate() -> dict:
             if not str(case.get(field) or "").strip():
                 errors.append(f"{label}: missing {field}")
         source = urlparse(case.get("source_url", ""))
-        if source.scheme != "https" or source.hostname not in {"court.gov.cn", "www.court.gov.cn"}:
+        if source.scheme != "https" or source.hostname not in {"court.gov.cn", "www.court.gov.cn", "gongbao.court.gov.cn"}:
             errors.append(f"{label}: source is not an official court.gov.cn HTTPS URL")
-        if case.get("source_type") != "official_court_guiding":
+        if case.get("source_type") == "official_court_gazette":
+            if source.hostname != "gongbao.court.gov.cn":
+                errors.append(f"{label}: gazette URL has the wrong host")
+            if len(case.get("summary", "")) < 80 or len(case.get("judgment_reasoning", "")) < 80:
+                errors.append(f"{label}: gazette excerpts are too short")
+            if not all("历史版本" in law.get("note", "") for law in case.get("laws", [])):
+                errors.append(f"{label}: missing historical-law warning")
+            for field in ("summary", "dispute_focus", "judgment_result", "judgment_reasoning"):
+                if re.search(r"(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{17}[\dXx](?!\d)", case.get(field, "")):
+                    errors.append(f"{label}: unredacted personal identifier in {field}")
+        elif case.get("source_type") != "official_court_guiding":
             errors.append(f"{label}: unexpected source_type")
         if not case.get("laws"):
             errors.append(f"{label}: missing related law")
@@ -47,8 +61,10 @@ def validate() -> dict:
             if image_source.scheme != "https" or not image_source.hostname:
                 errors.append(f"{label}: image is missing an HTTPS provenance URL")
 
-    for key in ("slug", "source_external_id", "source_url"):
-        values = [case.get(key) for case in cases]
+    for key in ("slug", "source_external_id", "source_url", "case_number"):
+        values = [case.get(key) for case in cases if case.get(key)]
+        if key == "case_number":
+            values = [re.sub(r"[()（）\s]", "", value) for value in values]
         duplicates = [value for value, count in Counter(values).items() if count > 1]
         if duplicates:
             errors.append(f"duplicate {key}: {duplicates[:3]}")
@@ -63,6 +79,12 @@ def validate() -> dict:
     for tag, minimum in (("大学生高频", 35), ("社会热点", 100), ("日常生活", 45)):
         if tag_counts[tag] < minimum:
             errors.append(f"expected at least {minimum} cases tagged {tag}, got {tag_counts[tag]}")
+    gazette_recent = sum(
+        int(next((tag[:4] for tag in case["tags"] if tag.endswith("年公报")), "0")) >= 2015
+        for case in cases if case.get("source_type") == "official_court_gazette"
+    )
+    if gazette_recent < 150:
+        errors.append(f"expected at least 150 gazette cases from 2015 onward, got {gazette_recent}")
 
     if errors:
         raise SystemExit("case library validation failed:\n- " + "\n- ".join(errors[:30]))
@@ -72,6 +94,8 @@ def validate() -> dict:
         "categories": dict(sorted(category_counts.items())),
         "distinct_courts": court_count,
         "topic_tags": {key: tag_counts[key] for key in ("大学生高频", "社会热点", "日常生活")},
+        "source_types": dict(source_types),
+        "gazette_2015_or_later": gazette_recent,
     }
 
 

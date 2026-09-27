@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 
 from core.models import db
@@ -176,14 +176,14 @@ VERIFIED_CASES = (
 )
 
 
-CASE_LIBRARY_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_200.json"
+CASE_LIBRARY_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_500.json"
 
 
 def _load_bundled_cases():
     """Load the generated, reviewable case data without any runtime crawling."""
     payload = json.loads(CASE_LIBRARY_PATH.read_text(encoding="utf-8"))
     rows = payload.get("cases", [])
-    if payload.get("schema_version") != 1 or len(rows) != 193:
+    if payload.get("schema_version") != 1 or len(rows) != 493:
         raise RuntimeError("bundled legal case library is missing or has an unexpected schema")
     normalized = []
     for raw in rows:
@@ -210,7 +210,6 @@ BUNDLED_CASES = _load_bundled_cases()
 
 
 def seed_reference_data():
-    checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
     for index, (slug, name, description, icon) in enumerate(COMMUNITY_CATEGORIES, 1):
         row = CommunityCategory.query.filter_by(slug=slug).first()
         if row is None:
@@ -231,7 +230,7 @@ def seed_reference_data():
         public_fields.setdefault("source_type", "official_court")
         public_fields.setdefault("source_hash", hashlib.sha256(digest_source.encode("utf-8")).hexdigest())
         public_fields.update({
-            "source_checked_at": checked_at,
+            "source_checked_at": None,
             "verification_status": "verified",
             "status": "published",
         })
@@ -258,4 +257,4 @@ def seed_reference_data():
         for law_name, article, note in definition["laws"]:
             db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
     db.session.commit()
-    process_outbox(limit=250)
+    process_outbox(limit=600)

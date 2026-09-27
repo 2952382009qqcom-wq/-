@@ -113,20 +113,21 @@ def test_verified_case_search_favorite_and_personalized_recommendations():
 def test_bundled_case_library_is_large_diverse_traceable_and_paginated():
     with app_module.app.app_context():
         rows = LegalCase.query.filter_by(status="published", verification_status="verified").all()
-        assert len(rows) == 200
+        assert len(rows) == 500
         assert CaseCategory.query.filter_by(is_active=True).count() >= 17
         assert len({row.legal_domain for row in rows}) >= 12
         assert len({row.court_name for row in rows}) >= 115
-        assert all(row.source_url.startswith("https://www.court.gov.cn/") for row in rows)
+        assert all(row.source_url.startswith(("https://www.court.gov.cn/", "https://gongbao.court.gov.cn/")) for row in rows)
+        assert sum(row.source_type == "official_court_gazette" for row in rows) == 222
         assert all(row.summary and row.dispute_focus and row.judgment_reasoning for row in rows)
         assert all(len(row.source_hash) == 64 for row in rows)
-        assert CaseLawReference.query.count() >= 200
+        assert CaseLawReference.query.count() >= 500
 
     client = app_module.app.test_client()
     register(client, "case-library-test")
     first = client.get("/api/cases?per_page=20&page=1").get_json()
     second = client.get("/api/cases?per_page=20&page=2").get_json()
-    assert first["pagination"]["total"] == 200
+    assert first["pagination"]["total"] == 500
     assert first["pagination"]["has_next"] is True
     assert len(first["cases"]) == len(second["cases"]) == 20
     assert {item["id"] for item in first["cases"]}.isdisjoint({item["id"] for item in second["cases"]})

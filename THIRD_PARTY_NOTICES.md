@@ -21,7 +21,7 @@ competition submission.
 | Flask-Migrate / Alembic | 4.1.0 | Additive relational schema migrations | MIT | https://github.com/miguelgrinberg/Flask-Migrate |
 | Redis client | 6.4.0 | Optional shared Socket.IO and rate-limit backend | MIT | https://github.com/redis/redis-py |
 | Meilisearch Python SDK | 0.37.0 | Optional full-text community and case search | MIT | https://github.com/meilisearch/meilisearch-python |
-| chinese-law-corpus case compilation | 2026-08-14 snapshot | Structured metadata for 193 bundled Supreme People's Court guiding cases; every record retains its primary official URL | CC0-1.0 | https://github.com/lttxzmj/chinese-law-corpus |
+| chinese-law-corpus case compilation | 2026-09-09 commit `ce5e48b4be0cccae3445dfeb9f0d2a94588208fe` | Structured source for 271 bundled Supreme People's Court guiding cases and 222 Gazette judgments; every record retains its primary official URL | CC0-1.0 | https://github.com/lttxzmj/chinese-law-corpus |
 
 RapidOCR's engineering code is Apache-2.0, while its README separately states
 that OCR-model copyright belongs to Baidu. Before redistributing the Python
