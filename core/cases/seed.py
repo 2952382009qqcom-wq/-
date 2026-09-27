@@ -9,6 +9,7 @@ from core.community.models import CommunityCategory
 from core.search.indexing import enqueue_index, process_outbox
 
 from .models import CaseCategory, CaseLawReference, CaseTag, LegalCase, LegalCaseCategory, LegalCaseTag
+from .recent_2026 import RECENT_CASES
 
 
 VERIFIED_CASES = (
@@ -220,7 +221,7 @@ def seed_reference_data():
             db.session.add(CaseCategory(slug=slug, name=name, description=description, sort_order=index))
     db.session.flush()
 
-    for definition in VERIFIED_CASES + BUNDLED_CASES:
+    for definition in VERIFIED_CASES + BUNDLED_CASES + RECENT_CASES:
         row = LegalCase.query.filter_by(slug=definition["slug"]).first()
         if row is not None:
             continue
