@@ -1,0 +1,46 @@
+# Third-party components and design references
+
+This file records the open-source components used by the competition build of
+Mingjian (ChatLaw). The application code in this repository remains original
+unless a section below explicitly says otherwise. Full dependency license texts
+and transitive dependency notices should be generated again before the final
+competition submission.
+
+## Runtime components
+
+| Component | Version | Purpose | License | Source |
+| --- | --- | --- | --- | --- |
+| RapidOCR | 3.9.2 | Offline Chinese/English OCR for photos and scanned documents | Apache-2.0 | https://github.com/RapidAI/RapidOCR |
+| PaddleOCR-derived ONNX models bundled by RapidOCR | bundled with RapidOCR | OCR detection, orientation and recognition | RapidOCR's README states that model copyright belongs to Baidu; confirm and retain the exact upstream model terms before redistribution | https://github.com/RapidAI/RapidOCR#license |
+| ONNX Runtime | 1.30.0 | CPU inference backend for RapidOCR | MIT | https://github.com/microsoft/onnxruntime |
+| pypdfium2 / PDFium | 5.13.0 | Render scanned PDF pages for OCR | Apache-2.0 / BSD-style upstream notices | https://github.com/pypdfium2-team/pypdfium2 |
+| pypdf | 6.19.0 | Extract existing PDF text layers | BSD-3-Clause | https://github.com/py-pdf/pypdf |
+| Pillow | 12.3.0 | Safe image loading and normalization | HPND | https://github.com/python-pillow/Pillow |
+
+RapidOCR's engineering code is Apache-2.0, while its README separately states
+that OCR-model copyright belongs to Baidu. Before redistributing the Python
+environment, a server image or an Android package containing those model files,
+capture the exact packaged-model origin and applicable license/notice text and
+ship those notices with the artifact.
+
+## Design references (not vendored)
+
+The following projects were reviewed for architecture and test ideas. Their
+source code is not copied into this repository:
+
+- Microsoft Presidio (MIT): extensible PII recognizers and anonymization
+  pipeline - https://github.com/data-privacy-stack/presidio
+- FlagEmbedding (MIT): dense retrieval and reranking architecture -
+  https://github.com/FlagOpen/FlagEmbedding
+- Lawgent (MIT, with its upstream NOTICE requirements): citation guards and
+  grounded legal-answer workflow - https://github.com/WenzhuoXu/lawgent
+- LlamaIndex (MIT): history-aware question condensation and chat/RAG design -
+  https://github.com/run-llama/llama_index
+- RAGFlow (Apache-2.0): source-bounded citation prompting and retrieval answer
+  verification design - https://github.com/infiniflow/ragflow
+- Legal-RAG (license metadata must be rechecked before code reuse): statute-level
+  chunking and hybrid retrieval evaluation - https://github.com/Fan-Luo/Legal-RAG
+
+These references are listed for transparent provenance. Any future source-level
+reuse must add the exact commit, copied files, modifications and required
+license/NOTICE text here before release.

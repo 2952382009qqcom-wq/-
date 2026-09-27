@@ -26,9 +26,46 @@ from core.prompts import (
     STRATEGY_PROMPT,
     STUDENT_LEGAL_PROMPT,
 )
-from core.doc_parser import parse_upload
-from core.legal_kb import get_kb
+from core.doc_parser import (
+    DocumentParseError,
+    ocr_available,
+    parse_upload_detailed,
+)
+from core.privacy import (
+    RedactionSession,
+    public_redaction_summary,
+    redact_nested_json,
+)
 from core.models import db, User, AnalysisRecord
+from core.conversation import (
+    ConversationNotFound,
+    add_message,
+    conversation_context,
+    delete_conversation,
+    get_or_create_conversation,
+    list_conversations,
+    load_state,
+    save_state,
+    serialize_conversation,
+)
+from core.legal_agent import (
+    INTENT_ANALYZE,
+    INTENT_DRAFT,
+    INTENT_EVIDENCE,
+    INTENT_GENERAL,
+    INTENT_REVIEW,
+    INTENT_RISK,
+    INTENT_SEARCH,
+    INTENT_STRATEGY,
+    build_general_prompt,
+    compose_chat_answer,
+    detect_intent,
+    document_follow_up,
+    extract_document_fields,
+    infer_document_type,
+    missing_document_fields,
+    suggested_follow_ups,
+)
 from core.auth import auth_bp
 
 app = Flask(__name__)
@@ -42,6 +79,10 @@ CORS(app, supports_credentials=True, origins=cors_origins)
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///chatlaw.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+try:
+    app.config["MAX_CONTENT_LENGTH"] = max(1, int(float(os.getenv("MAX_UPLOAD_MB", "15")) * 1024 * 1024))
+except (TypeError, ValueError):
+    app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 db.init_app(app)
 
 login_manager = LoginManager()
@@ -57,8 +98,26 @@ def load_user(user_id):
 
 app.register_blueprint(auth_bp)
 
-kb = get_kb()
-MIN_LOCAL_RELEVANCE = 0.8
+APP_VERSION = os.getenv("APP_VERSION", "2026.09-legal-agent")
+
+
+def _text_field(data, key, default=""):
+    """Return a stripped JSON text field, or None for an invalid type."""
+    value = data.get(key, default) if isinstance(data, dict) else default
+    return value.strip() if isinstance(value, str) else None
+
+
+@app.errorhandler(DocumentParseError)
+def handle_document_parse_error(error):
+    return jsonify({"error": error.message, "code": error.code}), error.status_code
+
+
+@app.errorhandler(413)
+def handle_request_too_large(_error):
+    return jsonify({
+        "error": "上传文件超过服务器允许的大小。",
+        "code": "file_too_large",
+    }), 413
 
 
 def ensure_user_schema():
@@ -70,12 +129,102 @@ def ensure_user_schema():
         db.session.execute(text("ALTER TABLE users ADD COLUMN llm_api_key VARCHAR(512)"))
     if "llm_base_url" not in columns:
         db.session.execute(text("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(255)"))
+    if "free_api_used" not in columns:
+        db.session.execute(text("ALTER TABLE users ADD COLUMN free_api_used INTEGER NOT NULL DEFAULT 0"))
     db.session.commit()
 
 
-def filter_local_references(items):
-    """只保留匹配度 70% 及以上的本地知识库结果。"""
-    return [item for item in (items or []) if float(item.get("relevance", 0) or 0) >= MIN_LOCAL_RELEVANCE]
+def ensure_application_schema():
+    """Create additive tables for both direct and WSGI-based production starts."""
+    with app.app_context():
+        db.create_all()
+        ensure_user_schema()
+
+
+if os.getenv("AUTO_INIT_DB", "1").strip().lower() not in {"0", "false", "no"}:
+    ensure_application_schema()
+
+
+def _prepare_document_for_model(text, max_chars, parsed=None, filename=""):
+    """Redact PII before any external model call and expose safe pipeline metadata."""
+    session = RedactionSession()
+    safe_text = session.redact(text or "")
+    privacy_meta = public_redaction_summary(session)
+    privacy_meta["applied_before_model"] = True
+
+    if parsed is not None:
+        document_meta = dict(parsed.metadata)
+    else:
+        document_meta = {
+            "method": "text_input",
+            "page_count": 1,
+            "char_count": len(text or ""),
+            "warnings": [],
+            "ocr_confidence": None,
+        }
+    if filename:
+        document_meta["filename"] = os.path.basename(filename)
+
+    document_meta["truncated"] = len(safe_text) > max_chars
+    if document_meta["truncated"]:
+        document_meta.setdefault("warnings", []).append(
+            f"文本共 {len(safe_text)} 字，本次模型分析使用前 {max_chars} 字。"
+        )
+        safe_text = safe_text[:max_chars]
+    document_meta["analyzed_char_count"] = len(safe_text)
+    return safe_text, privacy_meta, document_meta
+
+
+def _attach_processing_meta(result, privacy_meta, document_meta, final_stage="analyze"):
+    result["privacy_meta"] = privacy_meta
+    result["document_meta"] = document_meta
+    result["pipeline_trace"] = [
+        {
+            "stage": "extract",
+            "status": "ok",
+            "method": document_meta.get("method", "text_input"),
+            "page_count": document_meta.get("page_count", 1),
+        },
+        {
+            "stage": "privacy",
+            "status": "ok",
+            "masked_count": privacy_meta.get("masked_count", 0),
+        },
+        {"stage": final_stage, "status": "ok"},
+    ]
+    return result
+
+
+def _free_api_limit():
+    try:
+        return max(0, int(os.getenv("FREE_API_LIMIT", "10")))
+    except ValueError:
+        return 10
+
+
+def _free_api_remaining():
+    used = max(0, int(getattr(current_user, "free_api_used", 0) or 0))
+    return max(0, _free_api_limit() - used)
+
+
+def _refresh_current_user():
+    db.session.expire(current_user._get_current_object(), ["free_api_used"])
+
+
+def _refund_free_api_call(user_id=None):
+    target_user_id = user_id
+    if target_user_id is None:
+        target_user_id = current_user.id
+    db.session.execute(
+        text(
+            "UPDATE users SET free_api_used = free_api_used - 1 "
+            "WHERE id = :user_id AND free_api_used > 0"
+        ),
+        {"user_id": target_user_id},
+    )
+    db.session.commit()
+    if user_id is None:
+        _refresh_current_user()
 
 
 def require_approved(f):
@@ -84,20 +233,83 @@ def require_approved(f):
         if not current_user.is_authenticated:
             return jsonify({"error": "请先登录"}), 401
         has_personal_api = bool(getattr(current_user, "llm_api_key", None))
-        if not current_user.is_approved and not current_user.is_admin and not has_personal_api:
-            return jsonify({"error": "您的账号尚未通过管理员审核，请申请 API 使用权限，或在 API 设置中配置自己的 API Key"}), 403
-        return f(*a, **kw)
+        has_unlimited_access = current_user.is_approved or current_user.is_admin or has_personal_api
+        if has_unlimited_access:
+            return f(*a, **kw)
+
+        limit = _free_api_limit()
+        reservation = db.session.execute(
+            text(
+                "UPDATE users SET free_api_used = COALESCE(free_api_used, 0) + 1 "
+                "WHERE id = :user_id AND COALESCE(free_api_used, 0) < :limit"
+            ),
+            {"user_id": current_user.id, "limit": limit},
+        )
+        db.session.commit()
+        _refresh_current_user()
+
+        if reservation.rowcount != 1:
+            return jsonify({
+                "error": "10 次免费 AI 调用额度已用完，请在 API 设置中配置自己的 API Key。",
+                "code": "FREE_API_QUOTA_EXHAUSTED",
+                "free_api_limit": limit,
+                "free_api_remaining": 0,
+            }), 403
+
+        try:
+            response = app.make_response(f(*a, **kw))
+        except Exception:
+            _refund_free_api_call()
+            raise
+
+        if response.status_code >= 400:
+            _refund_free_api_call()
+        elif response.mimetype == "text/event-stream":
+            original_iterable = response.response
+            reserved_user_id = current_user.id
+
+            def guarded_stream():
+                try:
+                    yield from original_iterable
+                except Exception:
+                    app.logger.exception("Streaming AI response failed")
+                    try:
+                        with app.app_context():
+                            _refund_free_api_call(reserved_user_id)
+                    except Exception:
+                        app.logger.exception("Failed to refund interrupted free API call")
+                    payload = {
+                        "done": True,
+                        "result": {"error": "流式响应异常中断，本次免费额度已退回"},
+                    }
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            response.response = guarded_stream()
+        response.headers["X-Free-Api-Limit"] = str(limit)
+        response.headers["X-Free-Api-Remaining"] = str(_free_api_remaining())
+        return response
     return decorated
+
+
+@app.after_request
+def configure_streaming_headers(response):
+    if response.mimetype == "text/event-stream":
+        response.headers.setdefault("Cache-Control", "no-cache, no-transform")
+        response.headers.setdefault("X-Accel-Buffering", "no")
+    return response
 
 
 def save_record(module_type, input_text, result):
     if current_user.is_authenticated:
         try:
+            redaction_session = RedactionSession()
+            safe_input = redaction_session.redact(input_text or "")
+            safe_result = redact_nested_json(result, redaction_session)
             record = AnalysisRecord(
                 user_id=current_user.id,
                 module_type=module_type,
-                input_text=(input_text or "")[:5000],
-                result_json=json.dumps(result, ensure_ascii=False)[:10000],
+                input_text=safe_input[:5000],
+                result_json=json.dumps(safe_result, ensure_ascii=False)[:10000],
             )
             db.session.add(record)
             db.session.commit()
@@ -113,7 +325,7 @@ def save_record(module_type, input_text, result):
             if extra_records:
                 db.session.commit()
         except Exception:
-            pass
+            db.session.rollback()
 
 
 # ===== 首页 =====
@@ -126,7 +338,6 @@ def index():
 # ===== 演示数据生成（无 API Key 时自动启用） =====
 
 def _demo_analyze(text):
-    local_risks = kb.search_risk_patterns(text, top_k=3)
     return {
         "demo_mode": True,
         "document_type": "买卖合同",
@@ -136,15 +347,12 @@ def _demo_analyze(text):
             {"clause": "付款条款", "summary": "付款节点与交货进度挂钩", "risk_level": "低", "note": ""},
             {"clause": "违约责任条款", "summary": "仅约定了乙方违约责任，甲方违约责任缺失", "risk_level": "高", "note": "违约责任不对等"},
         ],
-        "legal_basis": ["《民法典》第584条", "《民法典》第497条"],
+        "legal_basis": [],
         "risk_points": [
             {"point": "违约责任不对等", "level": "高", "suggestion": "应约定双方对等的违约责任条款"},
             {"point": "验收标准不明确", "level": "中", "suggestion": "明确验收时间、标准和异议提出方式"},
             {"point": "知识产权归属未约定", "level": "中", "suggestion": "如涉及技术成果，应明确知识产权归属"},
-        ] + ([
-            {"point": f"[本地知识库] {lr['risk_type']}", "level": lr["severity"], "suggestion": lr["advice"]}
-            for lr in local_risks
-        ] if local_risks else []),
+        ],
         "overall_assessment": "该合同整体框架完整，但存在违约责任不对等、关键条款缺失等问题，建议在签署前进行修订完善。",
         "revision_suggestions": [
             "增加双方对等的违约责任条款",
@@ -156,30 +364,22 @@ def _demo_analyze(text):
 
 
 def _demo_search(question):
-    local_results = filter_local_references(kb.search_provisions(question, top_k=5))
     return {
         "demo_mode": True,
         "question": question,
-        "provisions": [
-            {"law_name": "中华人民共和国民法典", "article": "第584条",
-             "content": "当事人一方不履行合同义务或者履行合同义务不符合约定，造成对方损失的，损失赔偿额应当相当于因违约所造成的损失...",
-             "effective_date": "2021-01-01", "applicability": "适用于违约损害赔偿的计算"},
-            {"law_name": "中华人民共和国民法典", "article": "第497条",
-             "content": "提供格式条款一方不合理地免除或者减轻其责任、加重对方责任、限制对方主要权利的，该格式条款无效。",
-             "effective_date": "2021-01-01", "applicability": "适用于格式条款的效力认定"},
-        ],
-        "legal_analysis": f"根据您的问题，涉及的主要法律领域为民商法。建议重点关注相关法律的具体条文和司法解释。本地知识库已匹配到{len(local_results)}条相关法条，请参考下方的详细内容。",
-        "practical_advice": "建议咨询专业律师获取针对性法律意见。本文分析仅供参考。",
-        "related_cases": ["相关司法解释可参考最高人民法院发布的指导性案例"],
-        "local_references": [
-            {"law_name": r["law_name"], "article": r["article"], "content": r["content"], "relevance": r.get("relevance", 0)}
-            for r in local_results
-        ],
+        "provisions": [],
+        "answer": "当前未连接可用的外部模型，无法可靠回答这个法律问题。请稍后重试或先配置模型 API。",
+        "legal_analysis": "当前未连接可用的外部模型，无法可靠生成法律分析。",
+        "practical_advice": "请补充事情经过、发生时间、所在地区、对方身份和已有证据后重试。",
+        "related_cases": [],
+        "evidence_checklist": [],
+        "risk_points": [],
+        "next_steps": [],
+        "questions_to_clarify": ["事情发生在什么时间和地区？", "目前有哪些合同、转账和聊天记录？"],
     }
 
 
 def _demo_review(contract):
-    local_risks = kb.search_risk_patterns(contract, top_k=8)
     return {
         "demo_mode": True,
         "contract_type": "货物买卖合同",
@@ -189,21 +389,17 @@ def _demo_review(contract):
             {"clause_text": "如乙方逾期交货，每逾期一日按合同金额0.1%支付违约金...", "risk_type": "违约责任不对等",
              "risk_level": "高", "risk_score": 85, "explanation": "仅约定了乙方违约责任，未约定甲方逾期付款的违约责任，违反公平原则。",
              "revised_text": "双方应对等约定：甲方逾期付款的，每逾期一日按未付金额0.1%支付违约金；乙方逾期交货的，每逾期一日按合同金额0.1%支付违约金。",
-             "legal_basis": "《民法典》第497条"},
+             "legal_basis": ""},
             {"clause_text": "因履行本合同发生争议，由乙方所在地人民法院管辖。", "risk_type": "争议解决条款不利",
              "risk_level": "中", "risk_score": 70, "explanation": "约定对方所在地法院管辖，增加己方维权成本。",
-             "revised_text": "因履行本合同发生争议，由合同签订地（甲方所在地）人民法院管辖。", "legal_basis": "《民事诉讼法》第35条"},
+             "revised_text": "因履行本合同发生争议，由合同签订地（甲方所在地）人民法院管辖。", "legal_basis": ""},
             {"clause_text": "乙方有权在提前通知甲方后单方解除本合同...", "risk_type": "单方解除权",
              "risk_level": "高", "risk_score": 80, "explanation": "仅约定一方解除权，未约定解除后的清算事宜。",
-             "revised_text": "双方均可依照《民法典》第563条规定解除合同，解除后应按实际履行情况进行清算。",
-             "legal_basis": "《民法典》第563条"},
+             "revised_text": "双方可在符合法律规定或约定条件时解除合同，并约定解除后的清算方式。",
+             "legal_basis": ""},
         ],
         "missing_clauses": ["知识产权归属条款", "保密条款", "不可抗力条款", "送达条款"],
         "summary": "该合同整体风险为中等偏高，主要存在违约责任不对等、争议解决管辖不利等问题。建议在签署前对高风险条款进行修订，并补充缺失的必要条款。",
-        "detected_local_risks": len(local_risks),
-        "local_risk_reference": [
-            {"type": r["risk_type"], "severity": r["severity"], "advice": r["advice"]} for r in local_risks
-        ],
     }
 
 
@@ -1066,16 +1262,11 @@ def _demo_generate(doc_type, description):
 
 
 def _demo_strategy(case_description):
-    local_provisions = kb.search_provisions(case_description, top_k=3)
     return {
         "demo_mode": True,
         "case_type": "合同纠纷",
         "cause_of_action": "买卖合同纠纷",
-        "applicable_laws": [
-            "《中华人民共和国民法典》合同编",
-            "《中华人民共和国民事诉讼法》",
-            "《最高人民法院关于适用<中华人民共和国民法典>合同编通则的解释》",
-        ],
+        "applicable_laws": [],
         "key_evidence": [
             "双方签订的合同原件或复印件",
             "交货凭证、验收单据",
@@ -1085,13 +1276,13 @@ def _demo_strategy(case_description):
         ],
         "evidence_risks": ["部分电子证据需及时公证保全", "口头约定内容难以举证", "如需申请证人出庭需提前准备"],
         "legal_strategy": {
-            "primary": "以合同约定为依据，主张对方违约并要求赔偿损失。重点证明对方存在违约行为、己方已履行合同义务、损失的具体数额。",
+            "primary": "重点证明合同关系、己方履行情况、对方违约行为和实际损失，并根据完整材料确定请求。",
             "alternative": "如合同条款存在对己方不利的格式条款，可考虑主张该条款无效，以法律默认规则重新确定双方权利义务。",
             "settlement_advice": "在证据充分的情况下，可先行发送律师函催告履行；对方有履行意愿的，可协商分期付款方案；达成和解协议需确保可执行性。",
         },
         "jurisdiction_analysis": "合同纠纷一般由被告住所地或合同履行地人民法院管辖。如合同中有管辖约定，应审查该约定是否有效。",
-        "statute_of_limitation": "根据《民法典》第188条，诉讼时效为3年，自权利人知道或应当知道权利受损之日起计算。",
-        "similar_cases": ["类案检索可通过中国裁判文书网查询类似判决"],
+        "statute_of_limitation": "诉讼时效的起算、中断和届满需结合完整事实与可核验法条单独判断。",
+        "similar_cases": [],
         "success_probability": "需根据具体证据情况综合判断，建议在证据固定后评估（仅供参考）",
         "next_steps": [
             "收集并整理全部证据材料",
@@ -1100,23 +1291,17 @@ def _demo_strategy(case_description):
             "发送律师函催告对方履行",
             "如对方拒不履行，准备起诉材料",
         ],
-        "related_provisions_found": len(local_provisions),
     }
 
 
 def _demo_student_legal(scenario, description):
-    local_provisions = filter_local_references(kb.search_provisions(description, top_k=3))
     issue_label = scenario or "校园法律问题"
     return {
         "demo_mode": True,
         "issue_type": issue_label,
         "legal_relationship": "学生与学校之间通常同时存在教育管理关系、教育服务合同关系，以及人格权、财产权等民事权益保护关系；校外兼职还可能涉及劳动关系、劳务关系、居间服务或消费合同关系。",
         "school_rule_boundary": "学校可以依据学生手册、宿舍管理规定、奖助学金评定细则、社团管理办法等进行教育管理，但校规不得与法律法规相抵触，处理结果应当有事实依据、制度依据，并保障学生陈述、申辩和申诉权。",
-        "applicable_laws": [
-            "《中华人民共和国民法典》人格权编、合同编、侵权责任编【按具体事实适用】",
-            "《普通高等学校学生管理规定》关于学生权利、纪律处分、申诉处理的规定",
-            "《中华人民共和国劳动合同法》或《民法典》劳务合同规则【校外兼职/实习需结合用工事实判断】",
-        ],
+        "applicable_laws": [],
         "rights_and_obligations": [
             "学生有权要求学校说明处理依据、事实认定、程序安排和救济渠道。",
             "学校处理奖助学金、宿舍调整、纪律处分、社团管理等事项时，应遵守公开、公平、公正和程序正当原则。",
@@ -1142,7 +1327,6 @@ def _demo_student_legal(scenario, description):
         "communication_template": f"老师/负责人您好：我是学生，就“{issue_label}”事项申请核实处理。事情经过如下：{description[:120]}。我希望学校说明处理依据、事实认定和可适用的申诉渠道，并请在合理期限内给予书面回复。相关证据我已整理，可按要求提交。谢谢。",
         "authority_channels": ["辅导员/学院学生工作办公室", "学校学生申诉处理委员会", "学生资助管理中心或奖助学金评审部门", "劳动监察、市场监管、公安机关或人民法院【视具体争议选择】"],
         "disclaimer": "以上为校园法律风险分析，具体校规条款和外部救济路径需结合学校正式文件、当地规定和完整证据进一步核实。",
-        "related_provisions_found": len(local_provisions),
     }
 
 
@@ -1154,8 +1338,16 @@ def _call_llm(system_prompt, user_prompt, temperature=0.2):
 
 def _llm_or_demo(result, demo_func, *args):
     """如果 LLM 返回 demo_mode（API key 无效），自动回退到演示数据"""
+    if not isinstance(result, dict):
+        fallback = demo_func(*args)
+        fallback["llm_error"] = "模型返回结构无效，已切换为安全演示结果"
+        return fallback
     if result.get("demo_mode"):
         return demo_func(*args)
+    if result.get("error"):
+        fallback = demo_func(*args)
+        fallback["llm_error"] = str(result.get("error", "模型调用失败"))[:200]
+        return fallback
     return result
 
 
@@ -1194,7 +1386,10 @@ def _sse_stream(system_prompt, user_prompt, demo_func, *demo_args):
             yield f"data: {json.dumps({'chunk': item})}\n\n"
         else:
             # 最终 dict
-            if item.get("demo_mode") and demo_func:
+            if not isinstance(item, dict) and demo_func:
+                item = demo_func(*demo_args)
+                item["llm_error"] = "模型返回结构无效，已切换为安全演示结果"
+            elif item.get("demo_mode") and demo_func:
                 item = demo_func(*demo_args)
             elif item.get("error") and demo_func:
                 item = demo_func(*demo_args)
@@ -1202,45 +1397,415 @@ def _sse_stream(system_prompt, user_prompt, demo_func, *demo_args):
             yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
 
 
+# ===== 明鉴法律智能体（统一入口） =====
+def _legal_agent_request_data():
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+    else:
+        data = request.form.to_dict(flat=True)
+        for key in ("document_fields", "client_messages"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                try:
+                    data[key] = json.loads(value)
+                except (TypeError, ValueError):
+                    data[key] = {} if key == "document_fields" else []
+    return data, request.files.get("file")
+
+
+def _agent_document_result(doc_type, fields):
+    """Reuse the deterministic document builders without unverified template notes."""
+    fields = dict(fields or {})
+    if doc_type == "答辩状":
+        title = "民事答辩状"
+        body = _build_civil_defense_body(fields)
+    elif doc_type == "上诉状":
+        title = "民事上诉状"
+        body = _build_civil_appeal_body(fields)
+    elif doc_type == "合同":
+        contract_type = _clean_complaint_field(fields.get("contract_type")) or "买卖合同"
+        fields["contract_type"] = contract_type
+        subject = _clean_complaint_field(fields.get("subject"))
+        price = _clean_complaint_field(fields.get("price"))
+        if "租赁" in contract_type:
+            fields.setdefault("house", subject)
+            fields.setdefault("rent", price)
+        elif "借款" in contract_type:
+            fields.setdefault("purpose", subject)
+            fields.setdefault("amount", price)
+        elif "服务" in contract_type:
+            fields.setdefault("content", subject)
+            fields.setdefault("fee", price)
+        elif "劳动" in contract_type:
+            fields.setdefault("position", subject)
+            fields.setdefault("salary", price)
+        title = contract_type
+        body = _build_contract_body(fields)
+    else:
+        doc_type = "起诉状"
+        title = "民事起诉状"
+        body = _build_civil_complaint_body(fields)
+
+    # Several legacy templates contain explanatory statute numbers.  The chat
+    # agent never exports those until they have passed retrieval/audit.
+    body = body.split("\n【说明】", 1)[0].rstrip()
+    return {
+        "title": title,
+        "header": fields,
+        "body": body,
+        "attachments": [],
+        "notes": [
+            "这是根据你提供的信息形成的初稿，请核对主体、事实、请求、管辖和签署信息。",
+            "未自动补写无法确认的法条、案例或程序期限。",
+        ],
+        "document_type": doc_type,
+    }
+
+
+def _agent_attachment_preview(filename, parsed):
+    if parsed is None:
+        return None
+    session = RedactionSession()
+    preview = session.redact(parsed.text or "")[:700]
+    return {
+        "filename": os.path.basename(filename or "附件"),
+        "method": parsed.metadata.get("method", "unknown"),
+        "page_count": parsed.metadata.get("page_count", 1),
+        "char_count": parsed.metadata.get("char_count", len(parsed.text or "")),
+        "ocr_confidence": parsed.metadata.get("ocr_confidence"),
+        "warnings": list(parsed.metadata.get("warnings") or []),
+        "preview": preview,
+    }
+
+
+def _agent_store_draft_state(conversation, doc_type, fields, status="collecting"):
+    # Persist only field presence.  Raw personal data stays in the active
+    # browser turn and must be re-sent for a final personalised export.
+    safe_presence = {
+        key: f"[已记录字段:{key}]"
+        for key, value in dict(fields or {}).items()
+        if str(value or "").strip()
+    }
+    state = load_state(conversation)
+    state["draft"] = {
+        "doc_type": doc_type,
+        "fields": safe_presence,
+        "status": status,
+    }
+    save_state(conversation, state)
+
+
+def _agent_client_context(data, current_message):
+    rows = data.get("client_messages") if isinstance(data, dict) else []
+    values = []
+    if isinstance(rows, list):
+        for row in rows[-16:]:
+            if not isinstance(row, dict) or row.get("role") != "user":
+                continue
+            content = row.get("content")
+            if isinstance(content, str) and content.strip():
+                values.append(content[:6000])
+    if current_message and (not values or values[-1] != current_message):
+        values.append(current_message)
+    return "\n".join(values)[-24000:]
+
+
+def _agent_needs_input(conversation, message, intent, answer, attachment=None, **extra):
+    result = {
+        "conversation_id": conversation.id,
+        "intent": intent,
+        "status": "needs_information",
+        "answer": answer,
+        "attachment": attachment,
+        "suggested_follow_ups": [],
+    }
+    result.update(extra)
+    add_message(conversation, "assistant", answer, result=result)
+    save_record("legal_agent", message, result)
+    return result
+
+
+def _run_legal_agent_turn(data, upload=None):
+    if not isinstance(data, dict):
+        return {"error": "请求格式错误"}, 400
+    message = data.get("message", "")
+    conversation_id = data.get("conversation_id") or None
+    requested_action = data.get("action", "")
+    if not isinstance(message, str):
+        return {"error": "消息内容必须是文本"}, 400
+    if conversation_id is not None and not isinstance(conversation_id, str):
+        return {"error": "conversation_id 必须是文本"}, 400
+    if not isinstance(requested_action, str):
+        return {"error": "action 必须是文本"}, 400
+
+    parsed = None
+    filename = ""
+    if upload is not None and upload.filename:
+        filename, parsed = parse_upload_detailed(upload)
+    attachment_text = parsed.text if parsed is not None else ""
+    if not message.strip() and not attachment_text.strip():
+        return {"error": "请输入法律问题或上传需要分析的文件"}, 400
+    if not message.strip() and attachment_text:
+        message = "请分析这份附件，并告诉我关键问题和下一步建议。"
+
+    try:
+        conversation, _created = get_or_create_conversation(
+            current_user.id, conversation_id, message
+        )
+    except ConversationNotFound as error:
+        return {"error": str(error)}, 404
+
+    state = load_state(conversation)
+    active_draft = state.get("draft") if isinstance(state.get("draft"), dict) else {}
+    active_doc_type = str(active_draft.get("doc_type") or "")
+    attachment = _agent_attachment_preview(filename, parsed)
+    add_message(conversation, "user", message, attachment=attachment)
+
+    if active_doc_type and re.search(r"取消(?:文书|起草)?|退出(?:文书|起草)?|结束起草", message):
+        state.pop("draft", None)
+        save_state(conversation, state)
+        answer = "已结束本轮文书起草。你可以继续咨询其他法律问题或重新发起一份文书。"
+        result = {
+            "conversation_id": conversation.id,
+            "intent": INTENT_DRAFT,
+            "status": "completed",
+            "answer": answer,
+            "suggested_follow_ups": ["咨询一个法律问题", "重新起草起诉状", "上传文件分析"],
+        }
+        assistant_message = add_message(conversation, "assistant", answer, result=result)
+        result["message_id"] = assistant_message.id
+        return result, 200
+
+    intent = detect_intent(
+        message,
+        attachment_text=attachment_text,
+        filename=filename,
+        requested_action=requested_action,
+        active_document_type=active_doc_type,
+    )
+
+    if intent == INTENT_DRAFT:
+        doc_type = active_doc_type or infer_document_type(message) or "起诉状"
+        previous_fields = active_draft.get("fields") if active_doc_type == doc_type else {}
+        structured_fields = data.get("document_fields")
+        if not isinstance(structured_fields, dict):
+            structured_fields = {}
+        client_context = _agent_client_context(data, message)
+        fields = extract_document_fields(
+            doc_type,
+            client_context,
+            previous_fields if isinstance(previous_fields, dict) else {},
+            structured_fields,
+        )
+        missing = missing_document_fields(doc_type, fields)
+        if missing:
+            _agent_store_draft_state(conversation, doc_type, fields)
+            answer = document_follow_up(doc_type, missing)
+            return _agent_needs_input(
+                conversation,
+                message,
+                intent,
+                answer,
+                attachment,
+                document_type=doc_type,
+                missing_fields=missing,
+                collected_fields=list(fields),
+            ), 200
+
+        document = _agent_document_result(doc_type, fields)
+        _agent_store_draft_state(conversation, doc_type, fields, status="complete")
+        answer = (
+            f"{document['title']}初稿已经生成。它只使用你提供的事实，没有自动补写未经核验的法条、案例或程序期限。"
+            "请先核对当事人信息、请求、事实、管辖和证据，再导出使用。"
+        )
+        result = {
+            "conversation_id": conversation.id,
+            "intent": intent,
+            "status": "completed",
+            "answer": answer,
+            "document": document,
+            "can_export": True,
+            "suggested_follow_ups": suggested_follow_ups(intent, document),
+        }
+        assistant_message = add_message(conversation, "assistant", answer, result=result)
+        result["message_id"] = assistant_message.id
+        save_record("legal_agent", json.dumps(fields, ensure_ascii=False), result)
+        return result, 200
+
+    combined_text = message
+    if attachment_text:
+        combined_text += f"\n\n【附件正文】\n{attachment_text}"
+    minimum = 50 if intent == INTENT_REVIEW else 20 if intent == INTENT_ANALYZE else 1
+    if len(combined_text.strip()) < minimum:
+        label = "合同正文" if intent == INTENT_REVIEW else "文书正文"
+        answer = f"请粘贴或上传完整的{label}后再分析；目前的信息不足，我不会猜测文件内容。"
+        return _agent_needs_input(
+            conversation, message, intent, answer, attachment
+        ), 200
+
+    max_chars = 10000 if intent == INTENT_REVIEW else 8000
+    model_text, privacy_meta, document_meta = _prepare_document_for_model(
+        combined_text, max_chars, parsed, filename
+    )
+    context = conversation_context(conversation, limit=8)
+    try:
+        if intent == INTENT_REVIEW:
+            if _is_current_demo_mode():
+                raw_result = _demo_review(model_text)
+            else:
+                prompt = REVIEW_CONTRACT_PROMPT.replace("{contract}", model_text)
+                raw_result = _llm_or_demo(
+                    _call_llm(SYSTEM_PROMPT, prompt), _demo_review, model_text
+                )
+            tool_result = raw_result
+        elif intent == INTENT_ANALYZE:
+            if _is_current_demo_mode():
+                raw_result = _demo_analyze(model_text)
+            else:
+                prompt = ANALYZE_PROMPT.replace("{document}", model_text)
+                raw_result = _llm_or_demo(
+                    _call_llm(SYSTEM_PROMPT, prompt), _demo_analyze, model_text
+                )
+            tool_result = raw_result
+        elif intent == INTENT_STRATEGY:
+            if _is_current_demo_mode():
+                raw_result = _demo_strategy(model_text)
+            else:
+                prompt = STRATEGY_PROMPT.replace("{case_description}", model_text)
+                raw_result = _llm_or_demo(
+                    _call_llm(SYSTEM_PROMPT, prompt), _demo_strategy, model_text
+                )
+            tool_result = raw_result
+        else:
+            focus = {
+                INTENT_EVIDENCE: "证据清单整理",
+                INTENT_RISK: "法律风险分析",
+                INTENT_SEARCH: "法律法规检索",
+            }.get(intent, "一般法律咨询")
+            if _is_current_demo_mode():
+                raw_result = _demo_search(model_text)
+            else:
+                prompt = build_general_prompt(model_text, context, focus=focus)
+                raw_result = _llm_or_demo(
+                    _call_llm(SYSTEM_PROMPT, prompt), _demo_search, model_text
+                )
+            tool_result = raw_result
+    except Exception as error:
+        app.logger.exception("Legal agent capability failed")
+        raw_result = _demo_search(model_text)
+        raw_result["llm_error"] = str(error)[:200]
+        tool_result = raw_result
+
+    answer = compose_chat_answer(intent, tool_result)
+    result = {
+        "conversation_id": conversation.id,
+        "intent": intent,
+        "status": "completed",
+        "answer": answer,
+        "attachment": attachment,
+        "tool_result": tool_result,
+        "suggested_follow_ups": suggested_follow_ups(intent, tool_result),
+    }
+    assistant_message = add_message(conversation, "assistant", answer, result=result)
+    result["message_id"] = assistant_message.id
+    save_record("legal_agent", model_text, result)
+    return result, 200
+
+
+@app.route("/api/legal-agent", methods=["POST"])
+@require_approved
+def legal_agent():
+    """Unified synchronous legal-agent endpoint."""
+    data, upload = _legal_agent_request_data()
+    result, status = _run_legal_agent_turn(data, upload)
+    return jsonify(result), status
+
+
+@app.route("/api/legal-agent-stream", methods=["POST"])
+@require_approved
+def legal_agent_stream():
+    """Unified SSE endpoint with progress, answer chunks and a final envelope."""
+    data, upload = _legal_agent_request_data()
+    if not isinstance(data, dict) or not isinstance(data.get("message", ""), str):
+        return jsonify({"error": "消息内容必须是文本"}), 400
+
+    def generate():
+        yield f"data: {json.dumps({'stage': 'understand', 'status': '正在分析你的问题'}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'stage': 'answer', 'status': '正在整理回答'}, ensure_ascii=False)}\n\n"
+        result, status = _run_legal_agent_turn(data, upload)
+        if status >= 400:
+            yield f"data: {json.dumps({'done': True, 'result': result}, ensure_ascii=False)}\n\n"
+            return
+        answer = str(result.get("answer") or "")
+        for index in range(0, len(answer), 56):
+            yield f"data: {json.dumps({'chunk': answer[index:index + 56]}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'done': True, 'result': result}, ensure_ascii=False)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+@app.route("/api/legal-agent/conversations", methods=["GET"])
+@login_required
+def legal_agent_conversations():
+    return jsonify({"conversations": list_conversations(current_user.id)})
+
+
+@app.route("/api/legal-agent/conversations/<conversation_id>", methods=["GET"])
+@login_required
+def legal_agent_conversation(conversation_id):
+    try:
+        conversation, _ = get_or_create_conversation(current_user.id, conversation_id)
+    except ConversationNotFound as error:
+        return jsonify({"error": str(error)}), 404
+    return jsonify(serialize_conversation(conversation, include_messages=True))
+
+
+@app.route("/api/legal-agent/conversations/<conversation_id>", methods=["DELETE"])
+@login_required
+def remove_legal_agent_conversation(conversation_id):
+    if not delete_conversation(current_user.id, conversation_id):
+        return jsonify({"error": "会话不存在或无权访问"}), 404
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/analyze", methods=["POST"])
 @require_approved
 def analyze_document():
     """分析法律文书：上传文件或粘贴文本"""
+    parsed = None
+    filename = ""
     if "file" in request.files and request.files["file"].filename:
-        filename, text = parse_upload(request.files["file"])
+        filename, parsed = parse_upload_detailed(request.files["file"])
+        text = parsed.text
     else:
-        text = (request.form.get("text", "") or
-                request.get_json(silent=True).get("text", "") if request.get_json(silent=True) else "")
+        data = request.get_json(silent=True) or {}
+        text = request.form.get("text", "") or _text_field(data, "text")
 
+    if text is None:
+        return jsonify({"error": "文书内容必须是文本"}), 400
     if not text or len(text.strip()) < 20:
         return jsonify({"error": "请提供至少20字的文书内容"}), 400
 
-    if len(text) > 8000:
-        text = text[:8000]  # 截断过长的文本
+    model_text, privacy_meta, document_meta = _prepare_document_for_model(
+        text, 8000, parsed, filename
+    )
 
     if _is_current_demo_mode():
-        result = _demo_analyze(text)
-        save_record("analyze", text, result)
+        result = _attach_processing_meta(
+            _demo_analyze(model_text), privacy_meta, document_meta, "analyze"
+        )
+        save_record("analyze", model_text, result)
         return jsonify(result)
 
-    prompt = ANALYZE_PROMPT.replace("{document}", text)
+    prompt = ANALYZE_PROMPT.replace("{document}", model_text)
     try:
-        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_analyze, text)
+        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_analyze, model_text)
     except Exception as e:
-        result = _demo_analyze(text)
+        result = _demo_analyze(model_text)
         result["llm_error"] = str(e)[:200]
 
-    local_risks = kb.search_risk_patterns(text, top_k=3)
-    if local_risks and "risk_points" in result:
-        for lr in local_risks:
-            if not any(lr["risk_type"] in rp.get("point", "") for rp in result["risk_points"]):
-                result["risk_points"].append({
-                    "point": f"[本地知识库] {lr['risk_type']}",
-                    "level": lr["severity"],
-                    "suggestion": lr["advice"],
-                })
-
-    save_record("analyze", text, result)
+    result = _attach_processing_meta(result, privacy_meta, document_meta, "analyze")
+    save_record("analyze", model_text, result)
     return jsonify(result)
 
 
@@ -1248,26 +1813,34 @@ def analyze_document():
 @require_approved
 def analyze_document_stream():
     """分析法律文书（流式）"""
+    parsed = None
+    filename = ""
     if "file" in request.files and request.files["file"].filename:
-        _, text = parse_upload(request.files["file"])
+        filename, parsed = parse_upload_detailed(request.files["file"])
+        text = parsed.text
     else:
-        text = (request.form.get("text", "") or
-                request.get_json(silent=True).get("text", "") if request.get_json(silent=True) else "")
+        data = request.get_json(silent=True) or {}
+        text = request.form.get("text", "") or _text_field(data, "text")
 
+    if text is None:
+        return jsonify({"error": "文书内容必须是文本"}), 400
     if not text or len(text.strip()) < 20:
         return jsonify({"error": "请提供至少20字的文书内容"}), 400
 
-    if len(text) > 8000:
-        text = text[:8000]
+    model_text, privacy_meta, document_meta = _prepare_document_for_model(
+        text, 8000, parsed, filename
+    )
 
     if _is_current_demo_mode():
         def gen():
-            result = _demo_analyze(text)
-            save_record("analyze", text, result)
+            result = _attach_processing_meta(
+                _demo_analyze(model_text), privacy_meta, document_meta, "analyze"
+            )
+            save_record("analyze", model_text, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
-    prompt = ANALYZE_PROMPT.replace("{document}", text)
+    prompt = ANALYZE_PROMPT.replace("{document}", model_text)
 
     def gen():
         full_text = ""
@@ -1276,18 +1849,10 @@ def analyze_document_stream():
                 full_text += item
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_analyze(text)
-                local_risks = kb.search_risk_patterns(text, top_k=3)
-                if local_risks and "risk_points" in item:
-                    for lr in local_risks:
-                        if not any(lr["risk_type"] in rp.get("point", "") for rp in item["risk_points"]):
-                            item["risk_points"].append({
-                                "point": f"[本地知识库] {lr['risk_type']}",
-                                "level": lr["severity"],
-                                "suggestion": lr["advice"],
-                            })
-                save_record("analyze", text, item)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_analyze(model_text)
+                item = _attach_processing_meta(item, privacy_meta, document_meta, "analyze")
+                save_record("analyze", model_text, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
@@ -1298,44 +1863,34 @@ def analyze_document_stream():
 def search_provision():
     """检索相关法律法规"""
     data = request.get_json(silent=True) or {}
-    question = data.get("question", "").strip()
+    question = _text_field(data, "question")
 
+    if question is None:
+        return jsonify({"error": "法律问题必须是文本"}), 400
     if not question:
         return jsonify({"error": "请输入法律问题"}), 400
 
+    model_question, privacy_meta, document_meta = _prepare_document_for_model(
+        question, 4000
+    )
+
     if _is_current_demo_mode():
-        result = _demo_search(question)
-        save_record("search", question, result)
+        result = _attach_processing_meta(
+            _demo_search(model_question), privacy_meta, document_meta, "search"
+        )
+        save_record("search", model_question, result)
         return jsonify(result)
 
-    # 1. 本地知识库检索（作为参考补充）
-    local_results = filter_local_references(kb.search_provisions(question, top_k=5))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_results)
-    ) if local_results else ""
-
-    # 2. DeepSeek API 法律检索（主检索）
-    prompt = SEARCH_PROVISION_PROMPT.replace("{question}", question).replace("{knowledge_base}", kb_text)
+    prompt = SEARCH_PROVISION_PROMPT.replace("{question}", model_question)
     try:
-        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_search, question)
+        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_search, model_question)
     except Exception as e:
-        result = _demo_search(question)
+        result = _demo_search(model_question)
         result["llm_error"] = str(e)[:200]
 
-    # 补充本地检索结果
-    if local_results:
-        result["local_references"] = [
-            {
-                "law_name": r["law_name"],
-                "article": r["article"],
-                "content": r["content"],
-                "relevance": r.get("relevance", 0),
-            }
-            for r in local_results
-        ]
+    result = _attach_processing_meta(result, privacy_meta, document_meta, "search")
 
-    save_record("search", question, result)
+    save_record("search", model_question, result)
     return jsonify(result)
 
 
@@ -1344,39 +1899,37 @@ def search_provision():
 def search_provision_stream():
     """检索法律法规（流式）"""
     data = request.get_json(silent=True) or {}
-    question = data.get("question", "").strip()
+    question = _text_field(data, "question")
 
+    if question is None:
+        return jsonify({"error": "法律问题必须是文本"}), 400
     if not question:
         return jsonify({"error": "请输入法律问题"}), 400
 
+    model_question, privacy_meta, document_meta = _prepare_document_for_model(
+        question, 4000
+    )
+
     if _is_current_demo_mode():
         def gen():
-            result = _demo_search(question)
-            save_record("search", question, result)
+            result = _attach_processing_meta(
+                _demo_search(model_question), privacy_meta, document_meta, "search"
+            )
+            save_record("search", model_question, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
-    local_results = filter_local_references(kb.search_provisions(question, top_k=5))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_results)
-    ) if local_results else ""
-
-    prompt = SEARCH_PROVISION_PROMPT.replace("{question}", question).replace("{knowledge_base}", kb_text)
+    prompt = SEARCH_PROVISION_PROMPT.replace("{question}", model_question)
 
     def gen():
         for item in call_llm_stream_json(SYSTEM_PROMPT, prompt, 0.2, _get_model_override(), _get_llm_config()):
             if isinstance(item, str):
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_search(question)
-                if local_results:
-                    item["local_references"] = [
-                        {"law_name": r["law_name"], "article": r["article"], "content": r["content"], "relevance": r.get("relevance", 0)}
-                        for r in local_results
-                    ]
-                save_record("search", question, item)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_search(model_question)
+                item = _attach_processing_meta(item, privacy_meta, document_meta, "search")
+                save_record("search", model_question, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
@@ -1386,48 +1939,41 @@ def search_provision_stream():
 @require_approved
 def review_contract():
     """审查合同风险"""
+    parsed = None
+    filename = ""
     if "file" in request.files and request.files["file"].filename:
-        _, text = parse_upload(request.files["file"])
+        filename, parsed = parse_upload_detailed(request.files["file"])
+        text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
-        text = data.get("contract", "")
+        text = _text_field(data, "contract")
 
+    if text is None:
+        return jsonify({"error": "合同内容必须是文本"}), 400
     if not text or len(text.strip()) < 50:
         return jsonify({"error": "请提供至少50字的合同内容"}), 400
 
-    if len(text) > 10000:
-        text = text[:10000]
+    model_text, privacy_meta, document_meta = _prepare_document_for_model(
+        text, 10000, parsed, filename
+    )
 
     if _is_current_demo_mode():
-        result = _demo_review(text)
-        save_record("review", text, result)
+        result = _attach_processing_meta(
+            _demo_review(model_text), privacy_meta, document_meta, "review"
+        )
+        save_record("review", model_text, result)
         return jsonify(result)
 
-    # 1. 本地风险模式库匹配
-    local_risks = kb.search_risk_patterns(text, top_k=8)
-    risks_text = "\n".join(
-        f"{i+1}. [{r['risk_type']}] {r['pattern'][:150]}"
-        for i, r in enumerate(local_risks)
-    ) if local_risks else "无本地匹配"
-
-    # 2. LLM 深度分析
-    prompt = REVIEW_CONTRACT_PROMPT.replace("{contract}", text).replace("{risk_patterns}", risks_text)
+    prompt = REVIEW_CONTRACT_PROMPT.replace("{contract}", model_text)
     try:
         llm_result = _call_llm(SYSTEM_PROMPT, prompt)
-        result = _llm_or_demo(llm_result, _demo_review, text)
+        result = _llm_or_demo(llm_result, _demo_review, model_text)
     except Exception as e:
-        result = _demo_review(text)
+        result = _demo_review(model_text)
         result["llm_error"] = str(e)[:200]
 
-    # 补充本地风险检测
-    result["detected_local_risks"] = len(local_risks)
-    if local_risks:
-        result["local_risk_reference"] = [
-            {"type": r["risk_type"], "severity": r["severity"], "advice": r["advice"]}
-            for r in local_risks
-        ]
-
-    save_record("review", text, result)
+    result = _attach_processing_meta(result, privacy_meta, document_meta, "review")
+    save_record("review", model_text, result)
     return jsonify(result)
 
 
@@ -1435,47 +1981,44 @@ def review_contract():
 @require_approved
 def review_contract_stream():
     """审查合同风险（流式）"""
+    parsed = None
+    filename = ""
     if "file" in request.files and request.files["file"].filename:
-        _, text = parse_upload(request.files["file"])
+        filename, parsed = parse_upload_detailed(request.files["file"])
+        text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
-        text = data.get("contract", "")
+        text = _text_field(data, "contract")
 
+    if text is None:
+        return jsonify({"error": "合同内容必须是文本"}), 400
     if not text or len(text.strip()) < 50:
         return jsonify({"error": "请提供至少50字的合同内容"}), 400
 
-    if len(text) > 10000:
-        text = text[:10000]
+    model_text, privacy_meta, document_meta = _prepare_document_for_model(
+        text, 10000, parsed, filename
+    )
 
     if _is_current_demo_mode():
         def gen():
-            result = _demo_review(text)
-            save_record("review", text, result)
+            result = _attach_processing_meta(
+                _demo_review(model_text), privacy_meta, document_meta, "review"
+            )
+            save_record("review", model_text, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
-    local_risks = kb.search_risk_patterns(text, top_k=8)
-    risks_text = "\n".join(
-        f"{i+1}. [{r['risk_type']}] {r['pattern'][:150]}"
-        for i, r in enumerate(local_risks)
-    ) if local_risks else "无本地匹配"
-
-    prompt = REVIEW_CONTRACT_PROMPT.replace("{contract}", text).replace("{risk_patterns}", risks_text)
+    prompt = REVIEW_CONTRACT_PROMPT.replace("{contract}", model_text)
 
     def gen():
         for item in call_llm_stream_json(SYSTEM_PROMPT, prompt, 0.2, _get_model_override(), _get_llm_config()):
             if isinstance(item, str):
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_review(text)
-                item["detected_local_risks"] = len(local_risks)
-                if local_risks:
-                    item["local_risk_reference"] = [
-                        {"type": r["risk_type"], "severity": r["severity"], "advice": r["advice"]}
-                        for r in local_risks
-                    ]
-                save_record("review", text, item)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_review(model_text)
+                item = _attach_processing_meta(item, privacy_meta, document_meta, "review")
+                save_record("review", model_text, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
@@ -1486,9 +2029,9 @@ def review_contract_stream():
 def generate_document():
     """生成法律文书"""
     data = request.get_json(silent=True) or {}
-    doc_type = data.get("doc_type", "起诉状")
-    description = data.get("description", "").strip()
-    requirements = data.get("requirements", "格式规范，内容完整")
+    doc_type = _text_field(data, "doc_type", "起诉状")
+    description = _text_field(data, "description")
+    requirements = _text_field(data, "requirements", "格式规范，内容完整")
     complaint_fields = data.get("complaint_fields") or {}
     appeal_fields = data.get("appeal_fields") or {}
     defense_fields = data.get("defense_fields") or {}
@@ -1498,7 +2041,10 @@ def generate_document():
     judicial_confirmation_fields = data.get("judicial_confirmation_fields") or {}
     citizen_authorization_fields = data.get("citizen_authorization_fields") or {}
     contract_fields = data.get("contract_fields") or {}
-    contract_type = data.get("contract_type") or ""
+    contract_type = _text_field(data, "contract_type")
+
+    if None in (doc_type, description, requirements, contract_type):
+        return jsonify({"error": "文书类型、案情描述和生成要求必须是文本"}), 400
 
     if doc_type == "起诉状":
         fields = complaint_fields if isinstance(complaint_fields, dict) else _extract_complaint_fields_from_description(description)
@@ -1626,27 +2172,55 @@ def generate_document():
     if not description:
         return jsonify({"error": "请输入案情描述"}), 400
 
+    generation_session = RedactionSession()
+    model_description = generation_session.redact(description)[:8000]
+    model_requirements = generation_session.redact(str(requirements))[:2000]
+    privacy_meta = public_redaction_summary(generation_session)
+    privacy_meta["applied_before_model"] = True
+    document_meta = {
+        "method": "structured_text_input",
+        "page_count": 1,
+        "char_count": len(description) + len(str(requirements)),
+        "analyzed_char_count": len(model_description) + len(model_requirements),
+        "truncated": len(description) > 8000 or len(str(requirements)) > 2000,
+        "warnings": [],
+        "ocr_confidence": None,
+    }
+    if document_meta["truncated"]:
+        document_meta["warnings"].append("生成材料较长，已按字段上限截取后再分析。")
+
     if _is_current_demo_mode():
-        result = _demo_generate(doc_type, description)
-        save_record("generate", description, result)
+        result = _attach_processing_meta(
+            _demo_generate(doc_type, model_description),
+            privacy_meta,
+            document_meta,
+            "generate",
+        )
+        save_record("generate", model_description, result)
         return jsonify(result)
 
     prompt = (GENERATE_DOCUMENT_PROMPT
               .replace("{doc_type}", doc_type)
-              .replace("{description}", description)
-              .replace("{requirements}", requirements))
+              .replace("{description}", model_description)
+              .replace("{requirements}", model_requirements))
 
     try:
-        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_generate, doc_type, description)
+        result = _llm_or_demo(
+            _call_llm(SYSTEM_PROMPT, prompt),
+            _demo_generate,
+            doc_type,
+            model_description,
+        )
     except Exception as e:
-        result = _demo_generate(doc_type, description)
+        result = _demo_generate(doc_type, model_description)
         result["llm_error"] = str(e)[:200]
 
-    # 补充文书结构提示
-    templates = kb.risk_patterns  # 这里有 document_templates
     result["document_type"] = doc_type
+    _attach_processing_meta(
+        result, privacy_meta, document_meta, "generate"
+    )
 
-    save_record("generate", description, result)
+    save_record("generate", model_description, result)
     return jsonify(result)
 
 
@@ -1655,9 +2229,9 @@ def generate_document():
 def generate_document_stream():
     """生成法律文书（流式）"""
     data = request.get_json(silent=True) or {}
-    doc_type = data.get("doc_type", "起诉状")
-    description = data.get("description", "").strip()
-    requirements = data.get("requirements", "格式规范，内容完整")
+    doc_type = _text_field(data, "doc_type", "起诉状")
+    description = _text_field(data, "description")
+    requirements = _text_field(data, "requirements", "格式规范，内容完整")
     complaint_fields = data.get("complaint_fields") or {}
     appeal_fields = data.get("appeal_fields") or {}
     defense_fields = data.get("defense_fields") or {}
@@ -1667,7 +2241,10 @@ def generate_document_stream():
     judicial_confirmation_fields = data.get("judicial_confirmation_fields") or {}
     citizen_authorization_fields = data.get("citizen_authorization_fields") or {}
     contract_fields = data.get("contract_fields") or {}
-    contract_type = data.get("contract_type") or ""
+    contract_type = _text_field(data, "contract_type")
+
+    if None in (doc_type, description, requirements, contract_type):
+        return jsonify({"error": "文书类型、案情描述和生成要求必须是文本"}), 400
 
     if doc_type == "起诉状":
         fields = complaint_fields if isinstance(complaint_fields, dict) else _extract_complaint_fields_from_description(description)
@@ -1819,27 +2396,52 @@ def generate_document_stream():
     if not description:
         return jsonify({"error": "请输入案情描述"}), 400
 
+    generation_session = RedactionSession()
+    model_description = generation_session.redact(description)[:8000]
+    model_requirements = generation_session.redact(str(requirements))[:2000]
+    privacy_meta = public_redaction_summary(generation_session)
+    privacy_meta["applied_before_model"] = True
+    document_meta = {
+        "method": "structured_text_input",
+        "page_count": 1,
+        "char_count": len(description) + len(str(requirements)),
+        "analyzed_char_count": len(model_description) + len(model_requirements),
+        "truncated": len(description) > 8000 or len(str(requirements)) > 2000,
+        "warnings": [],
+        "ocr_confidence": None,
+    }
+    if document_meta["truncated"]:
+        document_meta["warnings"].append("生成材料较长，已按字段上限截取后再分析。")
+
     if _is_current_demo_mode():
         def gen():
-            result = _demo_generate(doc_type, description)
-            save_record("generate", description, result)
+            result = _attach_processing_meta(
+                _demo_generate(doc_type, model_description),
+                privacy_meta,
+                document_meta,
+                "generate",
+            )
+            save_record("generate", model_description, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
     prompt = (GENERATE_DOCUMENT_PROMPT
               .replace("{doc_type}", doc_type)
-              .replace("{description}", description)
-              .replace("{requirements}", requirements))
+              .replace("{description}", model_description)
+              .replace("{requirements}", model_requirements))
 
     def gen():
         for item in call_llm_stream_json(SYSTEM_PROMPT, prompt, 0.2, _get_model_override(), _get_llm_config()):
             if isinstance(item, str):
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_generate(doc_type, description)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_generate(doc_type, model_description)
                 item["document_type"] = doc_type
-                save_record("generate", description, item)
+                _attach_processing_meta(
+                    item, privacy_meta, document_meta, "generate"
+                )
+                save_record("generate", model_description, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
@@ -1850,38 +2452,35 @@ def generate_document_stream():
 def case_strategy():
     """案情策略分析"""
     data = request.get_json(silent=True) or {}
-    case_description = data.get("case_description", "").strip()
+    case_description = _text_field(data, "case_description")
 
+    if case_description is None:
+        return jsonify({"error": "案情描述必须是文本"}), 400
     if not case_description:
         return jsonify({"error": "请输入案情描述"}), 400
 
+    model_description, privacy_meta, document_meta = _prepare_document_for_model(
+        case_description, 8000
+    )
+
     if _is_current_demo_mode():
-        result = _demo_strategy(case_description)
-        save_record("strategy", case_description, result)
+        result = _attach_processing_meta(
+            _demo_strategy(model_description), privacy_meta, document_meta, "strategy"
+        )
+        save_record("strategy", model_description, result)
         return jsonify(result)
 
-    # 1. 本地知识库检索
-    local_provisions = filter_local_references(kb.search_provisions(case_description, top_k=3))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_provisions)
-    ) if local_provisions else "无本地匹配"
-
-    # 2. LLM 策略分析
-    prompt = (STRATEGY_PROMPT
-              .replace("{case_description}", case_description)
-              .replace("{knowledge_base}", kb_text))
+    prompt = STRATEGY_PROMPT.replace("{case_description}", model_description)
 
     try:
-        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_strategy, case_description)
+        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_strategy, model_description)
     except Exception as e:
-        result = _demo_strategy(case_description)
+        result = _demo_strategy(model_description)
         result["llm_error"] = str(e)[:200]
 
-    # 补充本地检索的类案参考
-    result["related_provisions_found"] = len(local_provisions)
+    result = _attach_processing_meta(result, privacy_meta, document_meta, "strategy")
 
-    save_record("strategy", case_description, result)
+    save_record("strategy", model_description, result)
     return jsonify(result)
 
 
@@ -1890,37 +2489,37 @@ def case_strategy():
 def case_strategy_stream():
     """案情策略分析（流式）"""
     data = request.get_json(silent=True) or {}
-    case_description = data.get("case_description", "").strip()
+    case_description = _text_field(data, "case_description")
 
+    if case_description is None:
+        return jsonify({"error": "案情描述必须是文本"}), 400
     if not case_description:
         return jsonify({"error": "请输入案情描述"}), 400
 
+    model_description, privacy_meta, document_meta = _prepare_document_for_model(
+        case_description, 8000
+    )
+
     if _is_current_demo_mode():
         def gen():
-            result = _demo_strategy(case_description)
-            save_record("strategy", case_description, result)
+            result = _attach_processing_meta(
+                _demo_strategy(model_description), privacy_meta, document_meta, "strategy"
+            )
+            save_record("strategy", model_description, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
-    local_provisions = filter_local_references(kb.search_provisions(case_description, top_k=3))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_provisions)
-    ) if local_provisions else "无本地匹配"
-
-    prompt = (STRATEGY_PROMPT
-              .replace("{case_description}", case_description)
-              .replace("{knowledge_base}", kb_text))
+    prompt = STRATEGY_PROMPT.replace("{case_description}", model_description)
 
     def gen():
         for item in call_llm_stream_json(SYSTEM_PROMPT, prompt, 0.2, _get_model_override(), _get_llm_config()):
             if isinstance(item, str):
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_strategy(case_description)
-                item["related_provisions_found"] = len(local_provisions)
-                save_record("strategy", case_description, item)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_strategy(model_description)
+                item = _attach_processing_meta(item, privacy_meta, document_meta, "strategy")
+                save_record("strategy", model_description, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
@@ -1931,49 +2530,48 @@ def case_strategy_stream():
 def student_legal():
     """大学生校园与校外兼职等法律问题咨询"""
     data = request.get_json(silent=True) or {}
-    scenario = data.get("scenario", "校园管理").strip()
-    description = data.get("description", "").strip()
+    scenario = _text_field(data, "scenario", "校园管理")
+    description = _text_field(data, "description")
 
+    if scenario is None or description is None:
+        return jsonify({"error": "问题类型和问题描述必须是文本"}), 400
     if not description or len(description) < 10:
         return jsonify({"error": "请至少输入10字的问题描述"}), 400
 
-    if len(description) > 8000:
-        description = description[:8000]
+    model_description, privacy_meta, document_meta = _prepare_document_for_model(
+        description, 8000
+    )
+    scenario_session = RedactionSession()
+    model_scenario = scenario_session.redact(scenario)
 
     if _is_current_demo_mode():
-        result = _demo_student_legal(scenario, description)
-        save_record("student_legal", description, result)
+        result = _attach_processing_meta(
+            _demo_student_legal(model_scenario, model_description),
+            privacy_meta,
+            document_meta,
+            "student_legal",
+        )
+        save_record("student_legal", model_description, result)
         return jsonify(result)
 
-    local_provisions = filter_local_references(kb.search_provisions(description, top_k=5))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_provisions)
-    ) if local_provisions else "无本地匹配"
-
     prompt = (STUDENT_LEGAL_PROMPT
-              .replace("{scenario}", scenario)
-              .replace("{description}", description)
-              .replace("{knowledge_base}", kb_text))
+              .replace("{scenario}", model_scenario)
+              .replace("{description}", model_description))
 
     try:
-        result = _llm_or_demo(_call_llm(SYSTEM_PROMPT, prompt), _demo_student_legal, scenario, description)
+        result = _llm_or_demo(
+            _call_llm(SYSTEM_PROMPT, prompt),
+            _demo_student_legal,
+            model_scenario,
+            model_description,
+        )
     except Exception as e:
-        result = _demo_student_legal(scenario, description)
+        result = _demo_student_legal(model_scenario, model_description)
         result["llm_error"] = str(e)[:200]
 
-    result["related_provisions_found"] = len(local_provisions)
-    result["local_references"] = [
-        {
-            "law_name": r["law_name"],
-            "article": r["article"],
-            "content": r["content"],
-            "relevance": r.get("relevance", 0),
-        }
-        for r in local_provisions
-    ]
+    result = _attach_processing_meta(result, privacy_meta, document_meta, "student_legal")
 
-    save_record("student_legal", description, result)
+    save_record("student_legal", model_description, result)
     return jsonify(result)
 
 
@@ -1982,48 +2580,112 @@ def student_legal():
 def student_legal_stream():
     """大学生法律问题咨询（流式）"""
     data = request.get_json(silent=True) or {}
-    scenario = data.get("scenario", "校园管理").strip()
-    description = data.get("description", "").strip()
+    scenario = _text_field(data, "scenario", "校园管理")
+    description = _text_field(data, "description")
 
+    if scenario is None or description is None:
+        return jsonify({"error": "问题类型和问题描述必须是文本"}), 400
     if not description or len(description) < 10:
         return jsonify({"error": "请至少输入10字的问题描述"}), 400
 
-    if len(description) > 8000:
-        description = description[:8000]
+    model_description, privacy_meta, document_meta = _prepare_document_for_model(
+        description, 8000
+    )
+    scenario_session = RedactionSession()
+    model_scenario = scenario_session.redact(scenario)
 
     if _is_current_demo_mode():
         def gen():
-            result = _demo_student_legal(scenario, description)
-            save_record("student_legal", description, result)
+            result = _attach_processing_meta(
+                _demo_student_legal(model_scenario, model_description),
+                privacy_meta,
+                document_meta,
+                "student_legal",
+            )
+            save_record("student_legal", model_description, result)
             yield f"data: {json.dumps({'done': True, 'result': result})}\n\n"
         return Response(stream_with_context(gen()), mimetype="text/event-stream")
 
-    local_provisions = filter_local_references(kb.search_provisions(description, top_k=5))
-    kb_text = "\n".join(
-        f"{i+1}. 《{r['law_name']}》{r['article']}: {r['content'][:100]}"
-        for i, r in enumerate(local_provisions)
-    ) if local_provisions else "无本地匹配"
-
     prompt = (STUDENT_LEGAL_PROMPT
-              .replace("{scenario}", scenario)
-              .replace("{description}", description)
-              .replace("{knowledge_base}", kb_text))
+              .replace("{scenario}", model_scenario)
+              .replace("{description}", model_description))
 
     def gen():
         for item in call_llm_stream_json(SYSTEM_PROMPT, prompt, 0.2, _get_model_override(), _get_llm_config()):
             if isinstance(item, str):
                 yield f"data: {json.dumps({'chunk': item})}\n\n"
             else:
-                if item.get("demo_mode") or item.get("error"):
-                    item = _demo_student_legal(scenario, description)
-                item["related_provisions_found"] = len(local_provisions)
-                item["local_references"] = [
-                    {"law_name": r["law_name"], "article": r["article"], "content": r["content"], "relevance": r.get("relevance", 0)}
-                    for r in local_provisions
-                ]
-                save_record("student_legal", description, item)
+                if not isinstance(item, dict) or item.get("demo_mode") or item.get("error"):
+                    item = _demo_student_legal(model_scenario, model_description)
+                item = _attach_processing_meta(item, privacy_meta, document_meta, "student_legal")
+                save_record("student_legal", model_description, item)
                 yield f"data: {json.dumps({'done': True, 'result': item})}\n\n"
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
+
+
+# ===== 文档预处理与服务健康检查 =====
+@app.route("/api/documents/extract", methods=["POST"])
+@login_required
+def extract_document():
+    """Extract a file without consuming an AI call or persisting the source."""
+    file_storage = request.files.get("file")
+    if not file_storage or not file_storage.filename:
+        return jsonify({"error": "请选择需要识别的文件"}), 400
+
+    filename, parsed = parse_upload_detailed(file_storage)
+    session = RedactionSession()
+    redacted_text = session.redact(parsed.text)
+    return jsonify({
+        "filename": os.path.basename(filename),
+        "extracted_text": parsed.text,
+        "redacted_text": redacted_text,
+        "document_meta": parsed.metadata,
+        "privacy_meta": public_redaction_summary(session),
+    })
+
+
+@app.route("/api/privacy/preview", methods=["POST"])
+@login_required
+def privacy_preview():
+    """Preview deterministic redaction; input and mapping are never stored."""
+    data = request.get_json(silent=True) or {}
+    source_text = _text_field(data, "text")
+    if source_text is None:
+        return jsonify({"error": "待脱敏内容必须是文本"}), 400
+    if not source_text:
+        return jsonify({"error": "请输入需要脱敏的文本"}), 400
+    session = RedactionSession()
+    return jsonify({
+        "redacted_text": session.redact(source_text),
+        "privacy_meta": public_redaction_summary(session),
+    })
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"status": "ok", "version": APP_VERSION})
+
+
+@app.route("/readyz", methods=["GET"])
+def readyz():
+    components = {
+        "database": False,
+        "external_model": not is_demo_mode(),
+        "ocr": ocr_available(),
+    }
+    try:
+        db.session.execute(text("SELECT 1"))
+        components["database"] = True
+    except Exception:
+        db.session.rollback()
+
+    required_ready = components["database"] and components["external_model"]
+    status = "ready" if required_ready and components["ocr"] else "degraded"
+    return jsonify({
+        "status": status,
+        "version": APP_VERSION,
+        "components": components,
+    }), (200 if required_ready else 503)
 
 
 # ===== API 状态检查 =====
@@ -2033,8 +2695,11 @@ def get_status():
     """检查 API 配置状态"""
     return jsonify({
         "demo_mode": _is_current_demo_mode(),
-        "kb_provisions": len(kb.provisions),
-        "kb_risks": len(kb.risk_patterns),
+        "answer_source": "external_model_api",
+        "ocr_available": ocr_available(),
+        "privacy_redaction": True,
+        "local_legal_knowledge_base": False,
+        "version": APP_VERSION,
     })
 
 
@@ -2055,18 +2720,17 @@ def get_history():
         .limit(20)
         .all()
     )
-    return jsonify({
-        "records": [
-            {
-                "id": r.id,
-                "module_type": r.module_type,
-                "input_text": r.input_text or "",
-                "result": parse_result(r.result_json),
-                "created_at": r.created_at.strftime("%Y-%m-%d %H:%M"),
-            }
-            for r in records
-        ]
-    })
+    safe_records = []
+    for record in records:
+        session = RedactionSession()
+        safe_records.append({
+            "id": record.id,
+            "module_type": record.module_type,
+            "input_text": session.redact(record.input_text or ""),
+            "result": redact_nested_json(parse_result(record.result_json), session),
+            "created_at": record.created_at.strftime("%Y-%m-%d %H:%M"),
+        })
+    return jsonify({"records": safe_records})
 
 
 @app.route("/api/history/<int:record_id>", methods=["DELETE"])
@@ -2097,9 +2761,15 @@ def get_templates():
 def set_config():
     """运行时更新 LLM 配置。管理员同步写全局配置，普通用户保存个人配置。"""
     data = request.get_json(silent=True) or {}
-    api_key = data.get("api_key", "").strip()
-    base_url = data.get("base_url", "").strip()
-    model = data.get("model", "").strip()
+    api_key = _text_field(data, "api_key")
+    base_url = _text_field(data, "base_url")
+    model = _text_field(data, "model")
+    if None in (api_key, base_url, model):
+        return jsonify({"error": "API 配置字段必须是文本"}), 400
+    if any("\n" in value or "\r" in value for value in (api_key, base_url, model)):
+        return jsonify({"error": "API 配置字段不能包含换行符"}), 400
+    if base_url and not base_url.startswith(("https://", "http://")):
+        return jsonify({"error": "Base URL 必须使用 http:// 或 https://"}), 400
 
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
@@ -2161,9 +2831,14 @@ def get_config():
 def test_config():
     """测试当前填写或已保存的 OpenAI 兼容配置。"""
     data = request.get_json(silent=True) or {}
-    api_key = data.get("api_key", "").strip() or current_user.llm_api_key or ""
-    base_url = data.get("base_url", "").strip() or current_user.llm_base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = data.get("model", "").strip() or current_user.llm_model or os.getenv("LLM_MODEL", "deepseek-v4-pro")
+    api_key_input = _text_field(data, "api_key")
+    base_url_input = _text_field(data, "base_url")
+    model_input = _text_field(data, "model")
+    if None in (api_key_input, base_url_input, model_input):
+        return jsonify({"error": "API 配置字段必须是文本"}), 400
+    api_key = api_key_input or current_user.llm_api_key or ""
+    base_url = base_url_input or current_user.llm_base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
+    model = model_input or current_user.llm_model or os.getenv("LLM_MODEL", "deepseek-v4-pro")
     ok, message = test_llm_connection(api_key, base_url, model)
     return jsonify({"status": "ok" if ok else "error", "message": message}), (200 if ok else 400)
 

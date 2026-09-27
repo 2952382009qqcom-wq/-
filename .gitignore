@@ -19,9 +19,8 @@ instance/
 *.sqlite
 *.sqlite3
 
-# Keep only the runtime knowledge-base files in data/
+# Keep only runtime rule data in data/
 data/*
-!data/provisions.json
 !data/contract_risks.json
 
 # Logs and local test output
@@ -32,11 +31,21 @@ test_output.txt
 
 # Generated artifacts and heavy local assets
 outputs/
+tmp/
 *.pdf
 *.docx
 *.pptx
 *.msi
 *.exe
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+*.pfx
+local.properties
+.gradle/
+**/build/
 
 # OS/editor files
 .DS_Store

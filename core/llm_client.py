@@ -132,7 +132,13 @@ def _parse_json_response(raw: str) -> dict:
         text = "\n".join(lines)
 
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return {
+                "error": "模型返回的 JSON 顶层必须是对象",
+                "invalid_response_type": type(parsed).__name__,
+            }
+        return parsed
     except json.JSONDecodeError:
         return {"raw_response": raw, "parse_error": True}
 

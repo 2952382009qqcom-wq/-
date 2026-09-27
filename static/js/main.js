@@ -4,7 +4,7 @@
  */
 
 // ===== State =====
-let currentModule = "analyze";
+let currentModule = "home";
 let selectedContractType = "买卖合同";
 
 const moduleExamples = {
@@ -572,7 +572,9 @@ document.querySelectorAll(".nav-item").forEach(btn => {
 function switchModule(module) {
   currentModule = module;
   document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-  const navBtn = document.querySelector(`[data-module="${module}"]`);
+  const professionalModules = new Set(["analyze", "search", "review", "generate", "strategy", "student"]);
+  const navTarget = professionalModules.has(module) ? "tools" : module;
+  const navBtn = document.querySelector(`[data-module="${navTarget}"]`);
   if (navBtn) navBtn.classList.add("active");
 
   document.querySelectorAll(".module").forEach(m => {
@@ -582,7 +584,446 @@ function switchModule(module) {
   const el = document.getElementById(`module-${module}`);
   if (el) { el.classList.remove("hidden"); el.classList.add("active"); }
 
+  const backButton = document.getElementById("professional-back");
+  if (backButton) backButton.classList.toggle("hidden", !professionalModules.has(module));
+  if (module === "home") loadAgentConversations();
+
   document.querySelector(".content").scrollTop = 0;
+}
+
+function openWorkspaceTask(module, withExample = false) {
+  switchModule(module);
+  if (withExample) fillExample(module);
+}
+
+function workspaceModuleLabel(module) {
+  const labels = {
+    analyze: "文书分析",
+    search: "法规检索",
+    review: "合同审查",
+    generate: "文书生成",
+    strategy: "策略分析",
+    student_legal: "学生法律",
+  };
+  return labels[module] || "法律任务";
+}
+
+async function loadWorkspaceOverview() {
+  const recentEl = document.getElementById("workspace-recent-list");
+  if (!recentEl || !window._user) return;
+
+  document.getElementById("workspace-username").textContent = window._user.username || "用户";
+  updateWorkspaceQuota();
+
+  try {
+    const [statusResp, historyResp] = await Promise.all([
+      fetch("/api/status"),
+      fetch("/api/history"),
+    ]);
+    if (statusResp.ok) {
+      const status = await statusResp.json();
+      document.getElementById("workspace-kb-provisions").textContent = Number(status.kb_provisions || 0).toLocaleString("zh-CN");
+      document.getElementById("workspace-kb-risks").textContent = Number(status.kb_risks || 0).toLocaleString("zh-CN");
+    }
+    if (historyResp.ok) {
+      const history = await historyResp.json();
+      const records = (history.records || []).slice(0, 3);
+      recentEl.innerHTML = records.length ? records.map(record => {
+        const label = workspaceModuleLabel(record.module_type);
+        const target = record.module_type === "student_legal" ? "student" : record.module_type;
+        const summary = (record.input_text || "未命名任务").replace(/\s+/g, " ").slice(0, 58);
+        return `<button type="button" class="workspace-recent-item" onclick="openWorkspaceTask('${escapeHtml(target)}')">
+          <span><b>${escapeHtml(label)}</b><time>${escapeHtml(record.created_at || "")}</time></span>
+          <p>${escapeHtml(summary)}</p>
+        </button>`;
+      }).join("") : '<p class="workspace-empty">完成一次分析后，任务会出现在这里。</p>';
+    }
+  } catch (e) {
+    recentEl.innerHTML = '<p class="workspace-empty">最近任务暂时无法加载。</p>';
+  }
+}
+
+function updateWorkspaceQuota() {
+  const el = document.getElementById("workspace-quota");
+  const u = window._user;
+  if (!el || !u) return;
+  if (u.is_admin || u.is_approved || u.has_llm_api_key) {
+    el.textContent = "不限";
+  } else {
+    const remaining = Number.isFinite(Number(u.free_api_remaining)) ? Number(u.free_api_remaining) : 10;
+    el.textContent = remaining;
+  }
+}
+
+// ===== MingJian Legal Agent =====
+const legalAgentState = {
+  conversationId: null,
+  messages: [],
+  file: null,
+  action: "",
+  sending: false,
+  lastResult: null,
+  welcomeMarkup: "",
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+  const list = document.getElementById("agent-message-list");
+  if (list) legalAgentState.welcomeMarkup = list.innerHTML;
+});
+
+function resizeAgentComposer(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+}
+
+function handleAgentComposerKey(event) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    submitLegalAgent();
+  }
+}
+
+function setAgentAction(action, button = null) {
+  const next = legalAgentState.action === action ? "" : action;
+  legalAgentState.action = next;
+  document.querySelectorAll("[data-agent-action]").forEach(el => {
+    el.classList.toggle("active", el.dataset.agentAction === next);
+  });
+  if (button && next) document.getElementById("agent-input")?.focus();
+}
+
+function useAgentStarter(message, action = "") {
+  const input = document.getElementById("agent-input");
+  if (!input) return;
+  input.value = message;
+  resizeAgentComposer(input);
+  if (action) setAgentAction(action, document.querySelector(`[data-agent-action="${action}"]`));
+  input.focus();
+}
+
+function formatFileSize(size) {
+  if (!Number.isFinite(Number(size))) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function onAgentFileSelected(input, fromCamera = false) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 15 * 1024 * 1024) {
+    alert("附件不能超过 15 MB");
+    input.value = "";
+    return;
+  }
+  legalAgentState.file = file;
+  const box = document.getElementById("agent-attachment");
+  document.getElementById("agent-attachment-name").textContent = file.name || "现场照片";
+  document.getElementById("agent-attachment-meta").textContent = `${fromCamera ? "拍照" : "附件"} · ${formatFileSize(file.size)} · 将自动识别并脱敏`;
+  const suffix = (file.name || "IMG").split(".").pop().slice(0, 4).toUpperCase();
+  document.getElementById("agent-attachment-thumb").textContent = suffix || "FILE";
+  box.classList.remove("hidden");
+  document.getElementById("agent-input")?.focus();
+}
+
+function clearAgentAttachment() {
+  legalAgentState.file = null;
+  ["agent-file", "agent-camera"].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.value = "";
+  });
+  document.getElementById("agent-attachment")?.classList.add("hidden");
+}
+
+function formatAgentText(text) {
+  const safe = escapeHtml(String(text || ""));
+  const lines = safe.split(/\r?\n/);
+  let html = "";
+  let inList = false;
+  for (const line of lines) {
+    const bullet = line.match(/^\s*[-•]\s+(.+)/);
+    if (bullet) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${bullet[1]}</li>`;
+    } else {
+      if (inList) { html += "</ul>"; inList = false; }
+      if (line.trim()) html += `<p>${line}</p>`;
+    }
+  }
+  if (inList) html += "</ul>";
+  return html || "<p>暂无内容</p>";
+}
+
+function scrollAgentToBottom() {
+  const list = document.getElementById("agent-message-list");
+  if (list) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
+}
+
+function appendAgentMessage(role, content, options = {}) {
+  const list = document.getElementById("agent-message-list");
+  if (!list) return null;
+  const article = document.createElement("article");
+  article.className = `agent-message ${role}`;
+  const attachment = options.attachment
+    ? `<div class="agent-attachment-inline">附件：${escapeHtml(options.attachment.name || options.attachment.filename || "材料")}</div>`
+    : "";
+  article.innerHTML = `<div class="agent-message-avatar">${role === "user" ? "我" : "明"}</div>
+    <div class="agent-message-body">
+      <div class="agent-message-name">${role === "user" ? "你" : "明鉴法律智能体"}</div>
+      <div class="agent-message-content${options.error ? " agent-error" : ""}">${formatAgentText(content)}${attachment}</div>
+      <div class="agent-result-details"></div>
+      <div class="agent-message-tools"></div>
+    </div>`;
+  list.appendChild(article);
+  scrollAgentToBottom();
+  return article;
+}
+
+function appendAgentPending() {
+  const article = appendAgentMessage("assistant", "");
+  if (!article) return null;
+  const content = article.querySelector(".agent-message-content");
+  content.innerHTML = '<div class="agent-stage">正在理解问题与识别任务</div>';
+  return article;
+}
+
+function renderAgentResultDetails(result) {
+  let html = "";
+  if (result.document && result.document.body) {
+    const doc = result.document;
+    html += `<div class="result-section-title">${escapeHtml(doc.title || "法律文书初稿")}</div>
+      <div class="document-preview"><pre>${escapeHtml(doc.body)}</pre></div>`;
+  }
+  return html;
+}
+
+function finishAgentMessage(article, result) {
+  const content = article.querySelector(".agent-message-content");
+  const details = article.querySelector(".agent-result-details");
+  const tools = article.querySelector(".agent-message-tools");
+  if (result.error) {
+    content.classList.add("agent-error");
+    content.innerHTML = formatAgentText(result.error);
+    return;
+  }
+  content.innerHTML = formatAgentText(result.answer || "已完成处理。");
+  details.innerHTML = renderAgentResultDetails(result);
+  const followUps = Array.isArray(result.suggested_follow_ups) ? result.suggested_follow_ups.slice(0, 4) : [];
+  tools.innerHTML = "";
+  followUps.forEach(value => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = String(value);
+    button.addEventListener("click", () => useAgentStarter(String(value)));
+    tools.appendChild(button);
+  });
+  if (result.document && result.can_export) {
+    const documentButton = document.createElement("button");
+    documentButton.type = "button";
+    documentButton.textContent = "导出 Word";
+    documentButton.addEventListener("click", exportAgentDocument);
+    tools.appendChild(documentButton);
+  }
+  const exportButton = document.createElement("button");
+  exportButton.type = "button";
+  exportButton.textContent = "导出本次会话";
+  exportButton.addEventListener("click", exportAgentConversation);
+  tools.appendChild(exportButton);
+  scrollAgentToBottom();
+}
+
+async function submitLegalAgent() {
+  if (legalAgentState.sending) return;
+  const input = document.getElementById("agent-input");
+  let message = (input?.value || "").trim();
+  if (!message && !legalAgentState.file) return;
+  if (!message) message = "请分析这份附件，并告诉我关键问题和下一步建议。";
+
+  const file = legalAgentState.file;
+  appendAgentMessage("user", message, { attachment: file ? { name: file.name } : null });
+  legalAgentState.messages.push({ role: "user", content: message });
+  if (input) { input.value = ""; resizeAgentComposer(input); }
+
+  const pending = appendAgentPending();
+  const send = document.getElementById("agent-send");
+  legalAgentState.sending = true;
+  if (send) send.disabled = true;
+
+  const form = new FormData();
+  form.append("message", message);
+  if (legalAgentState.conversationId) form.append("conversation_id", legalAgentState.conversationId);
+  if (legalAgentState.action) form.append("action", legalAgentState.action);
+  form.append("client_messages", JSON.stringify(legalAgentState.messages.slice(-16)));
+  if (file) form.append("file", file, file.name);
+
+  try {
+    const response = await fetch("/api/legal-agent-stream", { method: "POST", body: form });
+    syncFreeQuotaFromResponse(response);
+    if (response.status === 401) { showAuth(); throw new Error("请先登录"); }
+    if (!response.ok || !response.body) {
+      const type = response.headers.get("content-type") || "";
+      const body = type.includes("application/json") ? await response.json() : {};
+      throw new Error(body.error || `服务异常 (${response.status})`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let streamed = "";
+    let finalResult = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        const line = block.split("\n").find(item => item.startsWith("data: "));
+        if (!line) continue;
+        let event;
+        try { event = JSON.parse(line.slice(6)); } catch (_) { continue; }
+        if (event.stage) {
+          const stageEl = pending.querySelector(".agent-message-content");
+          stageEl.innerHTML = `<div class="agent-stage">${escapeHtml(event.status || "正在处理")}</div>`;
+        } else if (event.chunk) {
+          streamed += event.chunk;
+          pending.querySelector(".agent-message-content").innerHTML = `<div class="agent-cursor">${formatAgentText(streamed)}</div>`;
+          scrollAgentToBottom();
+        } else if (event.done) {
+          finalResult = event.result || {};
+        }
+      }
+    }
+    if (!finalResult) throw new Error("流式响应异常结束");
+    finishAgentMessage(pending, finalResult);
+    if (finalResult.conversation_id) legalAgentState.conversationId = finalResult.conversation_id;
+    legalAgentState.lastResult = finalResult;
+    legalAgentState.messages.push({ role: "assistant", content: finalResult.answer || "", result: finalResult });
+    clearAgentAttachment();
+    setAgentAction("");
+    updateQuotaHint();
+    loadAgentConversations();
+  } catch (error) {
+    finishAgentMessage(pending, { error: error.message || "请求失败" });
+  } finally {
+    legalAgentState.sending = false;
+    if (send) send.disabled = false;
+  }
+}
+
+async function loadAgentConversations() {
+  const rail = document.getElementById("agent-session-list");
+  const drawer = document.getElementById("agent-history-content");
+  if (!rail || !window._user) return;
+  try {
+    const response = await fetch("/api/legal-agent/conversations");
+    if (!response.ok) throw new Error("会话加载失败");
+    const data = await response.json();
+    const rows = Array.isArray(data.conversations) ? data.conversations : [];
+    rail.innerHTML = rows.length ? rows.map(item => `<button type="button" class="agent-session-item ${item.id === legalAgentState.conversationId ? "active" : ""}" onclick="openAgentConversation('${escapeHtml(item.id)}')"><b>${escapeHtml(item.title || "新法律咨询")}</b><time>${escapeHtml(item.updated_at || "")}</time></button>`).join("") : '<p class="agent-session-empty">还没有历史会话</p>';
+    if (drawer) {
+      drawer.innerHTML = rows.length ? rows.map(item => `<div class="agent-history-row"><button type="button" onclick="openAgentConversation('${escapeHtml(item.id)}');toggleAgentHistory(true)"><b>${escapeHtml(item.title || "新法律咨询")}</b><time>${escapeHtml(item.updated_at || "")}</time></button><button type="button" class="agent-history-delete" onclick="deleteAgentConversation('${escapeHtml(item.id)}')">删除</button></div>`).join("") : '<p class="agent-session-empty">还没有历史会话</p>';
+    }
+  } catch (_) {
+    rail.innerHTML = '<p class="agent-session-empty">会话暂时无法加载</p>';
+    if (drawer) drawer.innerHTML = '<p class="agent-session-empty">会话暂时无法加载</p>';
+  }
+}
+
+function toggleAgentHistory(forceClose = false) {
+  const overlay = document.getElementById("agent-history-overlay");
+  const panel = document.getElementById("agent-history-panel");
+  if (!overlay || !panel) return;
+  if (forceClose) {
+    overlay.classList.add("hidden");
+    panel.classList.add("hidden");
+    return;
+  }
+  overlay.classList.toggle("hidden");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) loadAgentConversations();
+}
+
+function startNewAgentConversation() {
+  legalAgentState.conversationId = null;
+  legalAgentState.messages = [];
+  legalAgentState.lastResult = null;
+  clearAgentAttachment();
+  setAgentAction("");
+  const list = document.getElementById("agent-message-list");
+  if (list) list.innerHTML = legalAgentState.welcomeMarkup || '<article class="agent-message assistant"><div class="agent-message-avatar">明</div><div class="agent-message-body"><div class="agent-message-content"><p>新会话已开始，请描述你的法律问题。</p></div></div></article>';
+  document.querySelectorAll(".agent-session-item").forEach(el => el.classList.remove("active"));
+  switchModule("home");
+  document.getElementById("agent-input")?.focus();
+}
+
+async function openAgentConversation(conversationId) {
+  try {
+    const response = await fetch(`/api/legal-agent/conversations/${encodeURIComponent(conversationId)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "会话加载失败");
+    legalAgentState.conversationId = data.id;
+    legalAgentState.messages = Array.isArray(data.messages) ? data.messages : [];
+    legalAgentState.lastResult = [...legalAgentState.messages].reverse().find(item => item.result && Object.keys(item.result).length)?.result || null;
+    const list = document.getElementById("agent-message-list");
+    list.innerHTML = "";
+    legalAgentState.messages.forEach(item => {
+      const article = appendAgentMessage(item.role === "user" ? "user" : "assistant", item.content || "", { attachment: item.attachment });
+      if (item.role === "assistant" && item.result && Object.keys(item.result).length) finishAgentMessage(article, { ...item.result, answer: item.content || item.result.answer });
+    });
+    if (!legalAgentState.messages.length) startNewAgentConversation();
+    switchModule("home");
+    loadAgentConversations();
+  } catch (error) {
+    alert(error.message || "会话加载失败");
+  }
+}
+
+async function deleteAgentConversation(conversationId) {
+  if (!confirm("确定删除这段智能体会话吗？")) return;
+  const response = await fetch(`/api/legal-agent/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
+  if (!response.ok) { alert("删除失败"); return; }
+  if (legalAgentState.conversationId === conversationId) startNewAgentConversation();
+  loadAgentConversations();
+}
+
+function exportAgentConversation() {
+  if (!legalAgentState.messages.length) { alert("当前会话还没有可导出的内容"); return; }
+  const lines = ["# 明鉴法律智能体会话", "", `导出时间：${new Date().toLocaleString("zh-CN")}`, ""];
+  legalAgentState.messages.forEach(item => {
+    lines.push(`## ${item.role === "user" ? "用户" : "明鉴"}`, "", item.content || "", "");
+  });
+  lines.push("> 提示：本记录不替代律师正式法律意见，法条效力状态请到官方数据库核验。");
+  const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `明鉴法律智能体_${new Date().toISOString().slice(0, 10)}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportAgentDocument() {
+  const doc = legalAgentState.lastResult && legalAgentState.lastResult.document;
+  if (!doc || !doc.body) return;
+  try {
+    const response = await fetch("/api/download-docx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: doc.title || "法律文书", body: doc.body, header: doc.header || {}, doc_type: doc.document_type || "" }),
+    });
+    if (!response.ok) throw new Error("文书导出失败");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${doc.title || "法律文书"}.docx`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    alert(error.message || "文书导出失败");
+  }
 }
 
 // ===== Tab Switching =====
@@ -600,13 +1041,63 @@ function switchTab(module, tab) {
 }
 
 // ===== File Selection =====
-function onFileSelected(inputId, nameId) {
-  const input = document.getElementById(inputId);
-  const badge = document.getElementById(nameId);
-  if (input.files.length > 0) {
-    badge.textContent = input.files[0].name;
+const selectedUploadFiles = new Map();
+const uploadPreviewUrls = new Map();
+
+function updateUploadSelection(module, file, source = "file") {
+  if (!file) return;
+  selectedUploadFiles.set(module, file);
+
+  const badge = document.getElementById(`${module}-file-name`);
+  if (badge) {
+    badge.textContent = `${source === "camera" ? "已拍摄" : "已选择"}：${file.name || "现场照片"}`;
     badge.classList.remove("hidden");
   }
+
+  const preview = document.getElementById(`${module}-capture-preview`);
+  if (!preview) return;
+  const previousUrl = uploadPreviewUrls.get(module);
+  if (previousUrl) URL.revokeObjectURL(previousUrl);
+  uploadPreviewUrls.delete(module);
+
+  if (file.type && file.type.startsWith("image/")) {
+    const previewUrl = URL.createObjectURL(file);
+    uploadPreviewUrls.set(module, previewUrl);
+    const image = preview.querySelector("img");
+    const label = preview.querySelector("span");
+    if (image) image.src = previewUrl;
+    if (label) label.textContent = source === "camera" ? "照片已就绪，可直接开始识别" : "图片已就绪，可直接开始识别";
+    preview.classList.remove("hidden");
+  } else {
+    preview.classList.add("hidden");
+  }
+}
+
+function onFileSelected(inputId, nameId) {
+  const input = document.getElementById(inputId);
+  const module = inputId.replace(/-file$/, "");
+  if (input && input.files.length > 0) updateUploadSelection(module, input.files[0], "file");
+}
+
+function openCameraCapture(module) {
+  const cameraInput = document.getElementById(`${module}-camera`);
+  if (!cameraInput) return;
+  cameraInput.value = "";
+  cameraInput.click();
+}
+
+function onCameraSelected(module) {
+  const cameraInput = document.getElementById(`${module}-camera`);
+  if (cameraInput && cameraInput.files.length > 0) {
+    updateUploadSelection(module, cameraInput.files[0], "camera");
+  }
+}
+
+function getSelectedUploadFile(module) {
+  const remembered = selectedUploadFiles.get(module);
+  if (remembered) return remembered;
+  const input = document.getElementById(`${module}-file`);
+  return input && input.files.length > 0 ? input.files[0] : null;
 }
 
 // ===== Drag & Drop =====
@@ -620,9 +1111,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const input = zone.querySelector("input[type='file']");
       if (input && e.dataTransfer.files.length > 0) {
         input.files = e.dataTransfer.files;
-        const badgeId = input.id + "-name";
-        const badge = document.getElementById(badgeId);
-        if (badge) { badge.textContent = e.dataTransfer.files[0].name; badge.classList.remove("hidden"); }
+        const module = input.id.replace(/-file$/, "");
+        updateUploadSelection(module, e.dataTransfer.files[0], "file");
       }
     });
     zone.addEventListener("click", () => {
@@ -654,6 +1144,7 @@ async function apiPost(url, body, formData = null) {
       });
     }
     clearTimeout(timeoutId);
+    syncFreeQuotaFromResponse(resp);
     if (resp.status === 401) {
       hideLoading();
       showAuth();
@@ -663,11 +1154,11 @@ async function apiPost(url, body, formData = null) {
       hideLoading();
       const ct = resp.headers.get("content-type") || "";
       if (!ct.includes("application/json")) {
-        updateApprovalHint();
+        updateQuotaHint();
         return { error: "服务暂时不可用，请稍后重试" };
       }
       const data = await resp.json();
-      updateApprovalHint();
+      syncFreeQuotaFromData(data);
       return { error: data.error || "权限不足" };
     }
     const ct = resp.headers.get("content-type") || "";
@@ -679,7 +1170,6 @@ async function apiPost(url, body, formData = null) {
     hideLoading();
     return data;
   } catch (e) {
-    clearTimeout(timeoutId);
     hideLoading();
     if (e.name === "AbortError") {
       return { error: "请求超时，模型响应较慢，请稍后重试或检查 API 配置" };
@@ -704,15 +1194,16 @@ async function apiPostStream(url, body, formData, onChunk, onDone) {
         signal: controller.signal,
       });
     }
-    clearTimeout(timeoutId);
+    syncFreeQuotaFromResponse(resp);
 
     if (resp.status === 401) { hideLoading(); showAuth(); onDone({ error: "请先登录" }); return; }
     if (resp.status === 403) {
       hideLoading();
-      updateApprovalHint();
+      updateQuotaHint();
       const ct = resp.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
         const data = await resp.json();
+        syncFreeQuotaFromData(data);
         onDone({ error: data.error || "权限不足" });
       } else {
         onDone({ error: "权限不足" });
@@ -721,7 +1212,14 @@ async function apiPostStream(url, body, formData, onChunk, onDone) {
     }
     if (resp.status !== 200 && resp.status !== 201) {
       hideLoading();
-      onDone({ error: `服务异常 (${resp.status})` });
+      const ct = resp.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const data = await resp.json();
+        syncFreeQuotaFromData(data);
+        onDone({ error: data.error || `服务异常 (${resp.status})` });
+      } else {
+        onDone({ error: `服务异常 (${resp.status})` });
+      }
       return;
     }
 
@@ -769,13 +1267,14 @@ async function apiPostStream(url, body, formData, onChunk, onDone) {
     }
     onDone({ error: "流式响应异常结束" });
   } catch (e) {
-    clearTimeout(timeoutId);
     hideLoading();
     if (e.name === "AbortError") {
       onDone({ error: "请求超时，模型响应较慢，请稍后重试" });
     } else {
       onDone({ error: `请求失败: ${e.message}` });
     }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -800,6 +1299,26 @@ function escapeHtml(s) {
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
+}
+
+function syncFreeQuotaFromResponse(resp) {
+  if (!window._user || window._user.is_admin) return;
+  const remaining = resp.headers.get("X-Free-Api-Remaining");
+  const limit = resp.headers.get("X-Free-Api-Limit");
+  if (remaining !== null) window._user.free_api_remaining = Number(remaining);
+  if (limit !== null) window._user.free_api_limit = Number(limit);
+  updateQuotaHint();
+}
+
+function syncFreeQuotaFromData(data) {
+  if (!window._user || window._user.is_admin || !data) return;
+  if (data.free_api_remaining !== undefined) {
+    window._user.free_api_remaining = Number(data.free_api_remaining);
+  }
+  if (data.free_api_limit !== undefined) {
+    window._user.free_api_limit = Number(data.free_api_limit);
+  }
+  updateQuotaHint();
 }
 
 // ===== Result Display =====
@@ -831,10 +1350,6 @@ function riskClass(level) {
   return "medium";
 }
 function badgeClass(level) { return "badge-" + riskClass(level); }
-function visibleLocalRefs(refs) {
-  return (refs || []).filter(r => Number(r.relevance || 0) >= 0.5);
-}
-
 // ============================================================================
 //  Module 1: Legal Document Analysis
 // ============================================================================
@@ -894,10 +1409,10 @@ async function submitAnalyze() {
 
   let url, body, fd;
   if (isUpload) {
-    const fileInput = document.getElementById("analyze-file");
-    if (!fileInput.files.length) return showError("analyze", "请选择文件");
+    const selectedFile = getSelectedUploadFile("analyze");
+    if (!selectedFile) return showError("analyze", "请选择文件或拍照");
     fd = new FormData();
-    fd.append("file", fileInput.files[0]);
+    fd.append("file", selectedFile);
     url = "/api/analyze-stream";
   } else {
     const text = document.getElementById("analyze-text").value.trim();
@@ -931,29 +1446,21 @@ async function submitAnalyze() {
 // ============================================================================
 function renderSearchResult(result) {
   let html = "";
+
   if (result.legal_analysis) {
     html += `<div class="result-section-title">法律分析</div><p>${escapeHtml(result.legal_analysis)}</p>`;
   }
 
   const provisions = result.provisions || [];
   if (provisions.length) {
-    html += `<div class="result-section-title">AI 检索结果</div>`;
+    html += `<div class="result-section-title">法规线索 <span class="section-note">请以官方最新文本为准</span></div>`;
     for (const p of provisions) {
-      html += `<div class="provision-card">
+      html += `<div class="provision-card model-source">
+        <div class="provision-source-row"><span class="source-badge model">法规线索</span><span class="validity-pending">请核验</span></div>
         <div class="law-title">《${escapeHtml(p.law_name || "")}》${escapeHtml(p.article || "")}</div>
         <div class="law-text">${escapeHtml(p.content || "")}</div>
-        ${p.applicability ? `<p style="font-size:12px;color:var(--text-muted);margin-top:6px;">适用场景：${escapeHtml(p.applicability)}</p>` : ""}
-      </div>`;
-    }
-  }
-
-  const localRefs = visibleLocalRefs(result.local_references);
-  if (localRefs.length) {
-    html += `<div class="result-section-title">本地知识库匹配 (${localRefs.length}条)</div>`;
-    for (const r of localRefs) {
-      html += `<div class="provision-card">
-        <div class="law-title">《${escapeHtml(r.law_name)}》${escapeHtml(r.article)} <span style="font-size:11px;color:var(--text-muted);">匹配度 ${(r.relevance * 100).toFixed(0)}%</span></div>
-        <div class="law-text">${escapeHtml(r.content)}</div>
+        ${p.effective_date ? `<div class="provision-meta"><span>参考日期：${escapeHtml(p.effective_date)}</span></div>` : ""}
+        ${p.applicability ? `<p class="provision-applicability">适用场景：${escapeHtml(p.applicability)}</p>` : ""}
       </div>`;
     }
   }
@@ -962,6 +1469,33 @@ function renderSearchResult(result) {
     html += `<div class="result-section-title">实务建议</div><p>${escapeHtml(result.practical_advice)}</p>`;
   }
   return html;
+}
+
+async function copyLegalCitation(index, button) {
+  const citation = (window._legalCitations || [])[index];
+  if (!citation) return;
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(citation);
+      copied = true;
+    }
+  } catch (e) {}
+  if (!copied) {
+    const textarea = document.createElement("textarea");
+    textarea.value = citation;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    copied = document.execCommand("copy");
+    textarea.remove();
+  }
+  if (button && copied) {
+    const original = button.textContent;
+    button.textContent = "已复制";
+    setTimeout(() => { button.textContent = original; }, 1400);
+  }
 }
 
 async function submitSearch() {
@@ -992,7 +1526,7 @@ async function submitSearch() {
 // ============================================================================
 function renderReviewResult(result) {
   let html = "";
-  const score = result.overall_risk_score || 0;
+  const score = Number.isFinite(Number(result.overall_risk_score)) ? Number(result.overall_risk_score) : 0;
   const level = riskClass(result.overall_risk_level);
 
   html += `<div class="score-hero">
@@ -1011,7 +1545,7 @@ function renderReviewResult(result) {
       html += `<div class="risk-card ${lv}">
         <div class="risk-card-header">
           <span class="risk-card-title">${escapeHtml(item.risk_type || "")}</span>
-          <span class="badge badge-${lv}">${escapeHtml(item.risk_level || "中")} · ${item.risk_score || "-"}分</span>
+          <span class="badge badge-${lv}">${escapeHtml(item.risk_level || "中")} · ${escapeHtml(Number.isFinite(Number(item.risk_score)) ? String(Number(item.risk_score)) : "-")}分</span>
         </div>
         <div class="clause-original">原文：${escapeHtml((item.clause_text || "").substring(0, 150))}</div>
         <p>${escapeHtml(item.explanation || "")}</p>
@@ -1028,12 +1562,6 @@ function renderReviewResult(result) {
   if (result.summary) {
     html += `<div class="result-section-title">审查小结</div><p>${escapeHtml(result.summary)}</p>`;
   }
-  if (result.local_risk_reference && result.local_risk_reference.length) {
-    html += `<div class="result-section-title">本地风险库匹配 (${result.detected_local_risks || 0}项)</div>`;
-    html += result.local_risk_reference.map(lr =>
-      `<span class="badge badge-${riskClass(lr.severity)}" style="margin:3px;">${escapeHtml(lr.type)}</span>`
-    ).join(" ");
-  }
   return html;
 }
 
@@ -1044,10 +1572,10 @@ async function submitReview() {
 
   let url, body, fd;
   if (isUpload) {
-    const fileInput = document.getElementById("review-file");
-    if (!fileInput.files.length) return showError("review", "请选择合同文件");
+    const selectedFile = getSelectedUploadFile("review");
+    if (!selectedFile) return showError("review", "请选择合同文件或拍照");
     fd = new FormData();
-    fd.append("file", fileInput.files[0]);
+    fd.append("file", selectedFile);
     url = "/api/review-contract-stream";
   } else {
     const text = document.getElementById("review-text").value.trim();
@@ -1834,7 +2362,7 @@ function renderStrategyResult(result) {
     <div class="stat-cell"><div class="stat-label">案件类型</div><div class="stat-value" style="font-size:18px;">${escapeHtml(result.case_type || "-")}</div></div>
     <div class="stat-cell"><div class="stat-label">案由</div><div class="stat-value" style="font-size:18px;">${escapeHtml(result.cause_of_action || "-")}</div></div>
     <div class="stat-cell"><div class="stat-label">胜诉评估</div><div class="stat-value" style="font-size:18px;">${escapeHtml(result.success_probability || "-")}</div></div>
-    <div class="stat-cell"><div class="stat-label">本地法条匹配</div><div class="stat-value" style="font-size:18px;">${result.related_provisions_found || 0} 条</div></div>
+    <div class="stat-cell"><div class="stat-label">下一步建议</div><div class="stat-value" style="font-size:18px;">${(result.next_steps || []).length} 项</div></div>
   </div>`;
 
   if (result.applicable_laws && result.applicable_laws.length) {
@@ -1910,13 +2438,12 @@ async function submitStrategy() {
 // ============================================================================
 function renderStudentLegalResult(result) {
   let html = "";
-  const localRefs = visibleLocalRefs(result.local_references);
   html += `<div class="stat-grid">
     <div class="stat-cell"><div class="stat-label">问题类型</div><div class="stat-value" style="font-size:18px;">${escapeHtml(result.issue_type || "-")}</div></div>
     <div class="stat-cell"><div class="stat-label">风险提醒</div><div class="stat-value" style="font-size:18px;">${(result.risk_points || []).length} 项</div></div>
     <div class="stat-cell"><div class="stat-label">证据清单</div><div class="stat-value" style="font-size:18px;">${(result.evidence_checklist || []).length} 项</div></div>
     <div class="stat-cell"><div class="stat-label">处理步骤</div><div class="stat-value" style="font-size:18px;">${(result.action_plan || []).length} 步</div></div>
-    <div class="stat-cell"><div class="stat-label">本地法条匹配</div><div class="stat-value" style="font-size:18px;">${localRefs.length} 条</div></div>
+    <div class="stat-cell"><div class="stat-label">可联系渠道</div><div class="stat-value" style="font-size:18px;">${(result.authority_channels || []).length} 项</div></div>
   </div>`;
 
   html += `<div class="student-report-intro">
@@ -1958,15 +2485,6 @@ function renderStudentLegalResult(result) {
   }
   if (result.authority_channels && result.authority_channels.length) {
     html += `<div class="result-section-title">可联系渠道</div><ul>${result.authority_channels.map(c => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`;
-  }
-  if (localRefs.length) {
-    html += `<div class="result-section-title">本地知识库匹配</div>`;
-    for (const r of localRefs) {
-      html += `<div class="provision-card">
-        <div class="law-title">《${escapeHtml(r.law_name)}》${escapeHtml(r.article)} <span style="font-size:11px;color:var(--text-muted);">匹配度 ${(r.relevance * 100).toFixed(0)}%</span></div>
-        <div class="law-text">${escapeHtml(r.content)}</div>
-      </div>`;
-    }
   }
   if (result.disclaimer) {
     html += `<div class="result-section-title">提示</div><p style="color:var(--text-muted);font-size:13px;">${escapeHtml(result.disclaimer)}</p>`;
@@ -2176,8 +2694,9 @@ function historyFieldLabel(key) {
 // ===== API Configuration =====
 const API_PROVIDER_MODELS = {
   "https://api.deepseek.com/v1": [
-    ["deepseek-v4-pro", "deepseek-v4-pro"],
-    ["deepseek-v4-flash", "deepseek-v4-flash"],
+    ["deepseek-flash", "DeepSeek V4.1 Flash（推荐）"],
+    ["deepseek-v4-pro", "DeepSeek V4 Pro"],
+    ["deepseek-chat", "DeepSeek Chat（兼容）"],
   ],
   "https://dashscope.aliyuncs.com/compatible-mode/v1": [
     ["qwen-plus", "qwen-plus"],
@@ -2362,6 +2881,8 @@ function applyUserUI(u) {
   document.getElementById("header-username").textContent = u.username;
   document.getElementById("header-user").classList.remove("hidden");
   window._user = u;
+  const workspaceName = document.getElementById("workspace-username");
+  if (workspaceName) workspaceName.textContent = u.username;
 
   // 全部先隐藏
   document.getElementById("admin-status-group").style.display = "none";
@@ -2374,35 +2895,34 @@ function applyUserUI(u) {
     document.getElementById("btn-admin-panel").style.display = "";
     document.getElementById("btn-config-gear").style.display = "";
   } else {
-    updateApprovalHint();
+    updateQuotaHint();
   }
+  loadAgentConversations();
 }
 
-function updateApprovalHint() {
+function updateQuotaHint() {
   const u = window._user;
   const hint = document.getElementById("approval-hint");
-  const btn = document.getElementById("btn-request-approval");
-  const pending = document.getElementById("approval-pending-text");
-  const done = document.getElementById("approval-done-text");
+  const text = document.getElementById("free-quota-text");
 
   if (!u || u.is_admin) {
     hint.classList.add("hidden");
     return;
   }
 
-  // 普通用户：3 态
-  btn.classList.add("hidden");
-  pending.classList.add("hidden");
-  done.classList.add("hidden");
-
-  if (u.is_approved) {
-    done.classList.remove("hidden");
-  } else if (u.approval_requested) {
-    pending.classList.remove("hidden");
+  text.classList.remove("quota-exhausted");
+  if (u.has_llm_api_key) {
+    text.textContent = "个人 API 已启用";
+  } else if (u.is_approved) {
+    text.textContent = "AI 权限已开通";
   } else {
-    btn.classList.remove("hidden");
+    const limit = Number.isFinite(Number(u.free_api_limit)) ? Number(u.free_api_limit) : 10;
+    const remaining = Number.isFinite(Number(u.free_api_remaining)) ? Number(u.free_api_remaining) : limit;
+    text.textContent = `免费额度 ${remaining}/${limit}`;
+    if (remaining <= 0) text.classList.add("quota-exhausted");
   }
   hint.classList.remove("hidden");
+  updateWorkspaceQuota();
 }
 
 async function doLogin() {
@@ -2470,23 +2990,11 @@ async function doLogout() {
   document.getElementById("approval-hint").classList.add("hidden");
   document.getElementById("history-overlay").classList.add("hidden");
   document.getElementById("history-panel").classList.add("hidden");
+  document.getElementById("agent-history-overlay")?.classList.add("hidden");
+  document.getElementById("agent-history-panel")?.classList.add("hidden");
+  startNewAgentConversation();
   window._user = null;
   showAuth();
-}
-
-async function requestApproval() {
-  try {
-    const resp = await fetch("/api/auth/request-approval", { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      window._user.approval_requested = true;
-      updateApprovalHint();
-    } else {
-      alert(data.error || "申请失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
 }
 
 async function initApp() {
@@ -2508,7 +3016,7 @@ async function initApp() {
         document.getElementById("btn-config-gear").style.display = "";
       } else {
         document.getElementById("btn-config-gear").style.display = "";
-        updateApprovalHint();
+        updateQuotaHint();
       }
     }
   } catch (e) {}
@@ -2555,9 +3063,9 @@ async function loadAllUsers() {
     html += '<div class="admin-subtitle">用户管理</div><div class="admin-user-list">';
     for (const u of data.users) {
       const approved = u.is_admin ? '<span class="badge badge-admin">管理员</span>' :
-        (u.is_approved ? '<span class="badge badge-low">已通过</span>' :
-        (u.approval_requested ? '<span class="badge badge-medium">待审核</span>' :
-        '<span class="badge badge-high">未申请</span>'));
+        (u.has_llm_api_key ? '<span class="badge badge-low">个人 API</span>' :
+        (u.is_approved ? '<span class="badge badge-low">不限次数</span>' :
+        `<span class="badge ${u.free_api_remaining > 0 ? 'badge-medium' : 'badge-high'}">免费 ${u.free_api_remaining}/${u.free_api_limit}</span>`));
       const modelVal = u.llm_model || 'deepseek-v4-pro';
       const approvalTime = u.approval_requested || u.is_approved
         ? `<span class="admin-request-time">申请时间：${formatApprovalTime(u.approval_requested_at)}</span>`
@@ -2655,7 +3163,7 @@ function renderAdminMetrics(metrics) {
     .join("");
   return `<div class="admin-metrics">
     <div class="admin-metric"><strong>${metrics.users.total}</strong><span>用户总数</span></div>
-    <div class="admin-metric"><strong>${metrics.users.pending}</strong><span>待审核</span></div>
+    <div class="admin-metric"><strong>${metrics.users.quota_exhausted || 0}</strong><span>额度已用完</span></div>
     <div class="admin-metric"><strong>${metrics.users.personal_api}</strong><span>自配 API</span></div>
     <div class="admin-metric"><strong>${metrics.usage.today}</strong><span>今日调用</span></div>
     <div class="admin-metric"><strong>${metrics.usage.last_7_days}</strong><span>近7日调用</span></div>

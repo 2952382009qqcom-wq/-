@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>明鉴 · 法律文书智能助手</title>
+<title>明鉴法律智能体</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260527auth2">
+<link rel="stylesheet" href="/static/css/style.css?v=20260927agent">
 </head>
 <body>
 
@@ -17,7 +17,7 @@
     <span class="brand-mark">&#x2696;</span>
     <div class="brand-text">
       <h1 class="brand-name">明鉴</h1>
-      <span class="brand-tagline">法律文书智能助手</span>
+      <span class="brand-tagline">法律智能体</span>
     </div>
   </div>
   <div class="header-status">
@@ -33,16 +33,14 @@
     <button id="btn-config-gear" style="display:none" class="config-gear" onclick="toggleConfig()" title="API 设置">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
     </button>
-    <!-- 普通用户：审批入口（3 态：申请 / 审核中 / 已通过） -->
+    <!-- 普通用户：免费 AI 调用额度 -->
     <span id="approval-hint" class="hidden">
-      <button id="btn-request-approval" class="btn-approval-header" onclick="requestApproval()">申请 API 使用权限</button>
-      <span id="approval-pending-text" class="approval-hint-text hidden">正在审核中</span>
-      <span id="approval-done-text" class="approval-hint-text hidden">审核已通过</span>
+      <span id="free-quota-text" class="approval-hint-text">免费额度 10/10</span>
     </span>
     <!-- 用户名 -->
     <span id="header-user" class="header-user hidden">
       <span id="header-username"></span>
-      <button class="btn-history" onclick="toggleHistoryPanel()" title="历史记录">历史</button>
+      <button class="btn-history" onclick="toggleAgentHistory()" title="智能体会话记录">会话</button>
       <button class="btn-logout" onclick="doLogout()" title="退出登录">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
@@ -103,47 +101,30 @@
   </div>
 </div>
 
+<!-- 智能体会话历史 -->
+<div id="agent-history-overlay" class="config-overlay hidden" onclick="toggleAgentHistory()"></div>
+<div id="agent-history-panel" class="config-panel agent-history-panel hidden">
+  <div class="agent-history-head">
+    <div><h3>智能体会话</h3><p class="config-hint">继续会话或删除已脱敏的历史记录</p></div>
+    <button type="button" onclick="toggleAgentHistory()" aria-label="关闭">×</button>
+  </div>
+  <button type="button" class="agent-new-chat wide" onclick="startNewAgentConversation();toggleAgentHistory(true)">＋ 新建会话</button>
+  <div id="agent-history-content" class="agent-history-content">
+    <p style="color:var(--text-muted);font-size:13px;">加载中...</p>
+  </div>
+</div>
+
 <!-- 主布局 -->
 <div class="app-body">
 
   <!-- 左侧导航 -->
   <nav class="sidebar">
     <div class="nav-group">
-      <button class="nav-item active" data-module="analyze">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-        </span>
-        <span class="nav-label">文书分析</span>
+      <button class="nav-item active" data-module="home">
+        <span class="nav-label">明鉴法律智能体</span>
       </button>
-      <button class="nav-item" data-module="search">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        </span>
-        <span class="nav-label">法规检索</span>
-      </button>
-      <button class="nav-item" data-module="review">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        </span>
-        <span class="nav-label">合同审查</span>
-      </button>
-      <button class="nav-item" data-module="generate">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        </span>
-        <span class="nav-label">文书生成</span>
-      </button>
-      <button class="nav-item" data-module="strategy">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg>
-        </span>
-        <span class="nav-label">策略分析</span>
-      </button>
-      <button class="nav-item" data-module="student">
-        <span class="nav-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/><path d="M22 10v6"/></svg>
-        </span>
-        <span class="nav-label">学生法律</span>
+      <button class="nav-item" data-module="tools">
+        <span class="nav-label">专业工具</span>
       </button>
     </div>
   </nav>
@@ -151,8 +132,108 @@
   <!-- 内容区 -->
   <main class="content">
 
+    <button id="professional-back" type="button" class="professional-back hidden" onclick="switchModule('tools')">← 返回专业工具</button>
+
+    <!-- 明鉴法律智能体 -->
+    <section id="module-home" class="module active">
+      <div class="agent-layout">
+        <aside class="agent-session-rail" aria-label="智能体会话历史">
+          <button type="button" class="agent-new-chat" onclick="startNewAgentConversation()">＋ 新建会话</button>
+          <div class="agent-session-label">最近会话</div>
+          <div id="agent-session-list" class="agent-session-list">
+            <p class="agent-session-empty">登录后可查看历史会话</p>
+          </div>
+          <div class="agent-rail-trust">
+            <strong>回答原则</strong>
+            <span>先说明该怎么办</span>
+            <span>不确定就明确提示</span>
+            <span>具体法条请官方核验</span>
+          </div>
+        </aside>
+
+        <div class="agent-chat-panel">
+          <div class="agent-chat-head">
+            <div class="agent-identity">
+              <span class="agent-avatar">明</span>
+              <div><h2>明鉴法律智能体</h2><p><i></i> 法律咨询、合同审查与文书生成已就绪</p></div>
+            </div>
+            <div class="agent-head-actions">
+              <button type="button" onclick="toggleAgentHistory()">会话历史</button>
+              <button type="button" onclick="exportAgentConversation()">导出结果</button>
+            </div>
+          </div>
+
+          <div id="agent-message-list" class="agent-message-list" aria-live="polite">
+            <article class="agent-message assistant welcome">
+              <div class="agent-message-avatar">明</div>
+              <div class="agent-message-body">
+                <div class="agent-message-name">明鉴法律智能体</div>
+                <div class="agent-message-content">
+                  <p>你好，我可以直接回答法律问题，也可以读取 PDF、Word、图片和法律文书。上传材料后，我会自动识别合同并调用合同审查。</p>
+                  <p>我会先直接告诉你可以怎么处理；信息或法律依据不足时会明确请你补充，不会为了凑答案编造法条。</p>
+                </div>
+                <div class="agent-starter-grid">
+                  <button type="button" onclick="useAgentStarter('兼职押金不退，我可以怎么维权？','chat')"><b>法律咨询</b><span>给出处理步骤和核验提醒</span></button>
+                  <button type="button" onclick="useAgentStarter('请根据我的案情制定处理策略','strategy')"><b>案情策略</b><span>梳理争点、证据和行动路径</span></button>
+                  <button type="button" onclick="useAgentStarter('我想起草一份起诉状','draft')"><b>多轮起草</b><span>逐步收集信息并生成文书</span></button>
+                  <button type="button" onclick="document.getElementById('agent-file').click()"><b>分析材料</b><span>上传 PDF、Word、图片或合同</span></button>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <div class="agent-composer-wrap">
+            <div id="agent-attachment" class="agent-attachment hidden">
+              <div id="agent-attachment-thumb" class="agent-attachment-thumb">DOC</div>
+              <div><strong id="agent-attachment-name"></strong><span id="agent-attachment-meta">等待发送</span></div>
+              <button type="button" onclick="clearAgentAttachment()" aria-label="移除附件">×</button>
+            </div>
+            <div class="agent-quick-actions" aria-label="快捷任务">
+              <button type="button" data-agent-action="search" onclick="setAgentAction('search', this)">法规检索</button>
+              <button type="button" data-agent-action="strategy" onclick="setAgentAction('strategy', this)">案情策略</button>
+              <button type="button" data-agent-action="evidence" onclick="setAgentAction('evidence', this)">证据清单</button>
+              <button type="button" data-agent-action="risk" onclick="setAgentAction('risk', this)">风险分析</button>
+              <button type="button" data-agent-action="draft" onclick="setAgentAction('draft', this)">文书起草</button>
+            </div>
+            <div class="agent-composer">
+              <textarea id="agent-input" rows="1" maxlength="12000" placeholder="描述你的法律问题，或上传材料后提出要求…" onkeydown="handleAgentComposerKey(event)" oninput="resizeAgentComposer(this)"></textarea>
+              <div class="agent-composer-actions">
+                <button type="button" class="agent-icon-button" onclick="document.getElementById('agent-file').click()" title="上传文件" aria-label="上传文件">＋</button>
+                <button type="button" class="agent-icon-button" onclick="document.getElementById('agent-camera').click()" title="拍照分析" aria-label="拍照分析">◎</button>
+                <button id="agent-send" type="button" class="agent-send" onclick="submitLegalAgent()" aria-label="发送">↑</button>
+              </div>
+              <input type="file" id="agent-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*" class="hidden" onchange="onAgentFileSelected(this)">
+              <input type="file" id="agent-camera" accept="image/*" capture="environment" class="hidden" onchange="onAgentFileSelected(this, true)">
+            </div>
+            <p class="agent-composer-note">重要决定前请结合完整材料核实；涉及诉讼、重大金额或人身安全时建议及时咨询专业律师。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 专业工具二级入口 -->
+    <section id="module-tools" class="module hidden">
+      <div class="module-hero tools-hero">
+        <span class="workspace-eyebrow">PROFESSIONAL TOOLS</span>
+        <h2 class="module-title">专业工具</h2>
+        <p class="module-sub">保留原有六个专项模块，用于需要结构化表单和专门报告的任务。一般问题可直接回到智能体对话。</p>
+      </div>
+      <div class="professional-tools-grid">
+        <button type="button" onclick="openWorkspaceTask('analyze')"><span>01</span><b>文书分析</b><small>PDF、Word、图片 OCR 与风险标注</small></button>
+        <button type="button" onclick="openWorkspaceTask('search')"><span>02</span><b>法规检索</b><small>法规线索、适用条件与官方核验提示</small></button>
+        <button type="button" onclick="openWorkspaceTask('review')"><span>03</span><b>合同审查</b><small>高风险条款、缺失条款与修改建议</small></button>
+        <button type="button" onclick="openWorkspaceTask('generate')"><span>04</span><b>文书生成</b><small>诉讼文书与常用合同结构化生成</small></button>
+        <button type="button" onclick="openWorkspaceTask('strategy')"><span>05</span><b>策略分析</b><small>争议焦点、证据路径和行动方案</small></button>
+        <button type="button" onclick="openWorkspaceTask('student')"><span>06</span><b>学生法律</b><small>校园管理、实习兼职与校内救济</small></button>
+      </div>
+      <div class="tools-return-card">
+        <div><strong>不确定该用哪个工具？</strong><span>回到明鉴法律智能体，用自然语言描述问题即可自动路由。</span></div>
+        <button type="button" onclick="switchModule('home')">返回智能体</button>
+      </div>
+    </section>
+
     <!-- 模块1: 文书分析 -->
-    <section id="module-analyze" class="module active">
+    <section id="module-analyze" class="module hidden">
       <div class="module-hero">
         <h2 class="module-title">法律文书智能分析</h2>
         <p class="module-sub">上传法律文书或粘贴文本，AI 自动识别文档类型、提取关键条款、标记潜在风险</p>
@@ -173,10 +254,23 @@
           <div class="drop-zone" id="analyze-drop-zone">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>点击上传或拖拽文件</span>
-            <em>TXT / PDF / DOCX</em>
-            <input type="file" id="analyze-file" accept=".txt,.pdf,.docx" style="display:none" onchange="onFileSelected('analyze-file', 'analyze-file-name')">
+            <em>TXT / PDF / DOCX / JPG / PNG / WebP</em>
+            <input type="file" id="analyze-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('analyze-file', 'analyze-file-name')">
+          </div>
+          <div class="upload-action-row">
+            <button type="button" class="upload-action-btn" onclick="document.getElementById('analyze-file').click()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              选择文件
+            </button>
+            <button type="button" class="upload-action-btn camera-action" onclick="openCameraCapture('analyze')">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3h5Z"/><circle cx="12" cy="13" r="3.5"/></svg>
+              拍照识别
+            </button>
+            <input type="file" id="analyze-camera" accept="image/*" capture="environment" class="camera-input" onchange="onCameraSelected('analyze')">
           </div>
           <span id="analyze-file-name" class="file-badge hidden"></span>
+          <div id="analyze-capture-preview" class="capture-preview hidden"><img alt="待识别图片预览"><span></span></div>
+          <p class="processing-hint">手机拍照与扫描 PDF 会先 OCR；身份证、手机号等信息在发送给模型前自动脱敏。</p>
         </div>
         <button class="btn-primary" onclick="submitAnalyze()">
           <span>开始分析</span>
@@ -233,10 +327,23 @@
           <div class="drop-zone" id="review-drop-zone">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>点击上传或拖拽合同文件</span>
-            <em>TXT / PDF / DOCX</em>
-            <input type="file" id="review-file" accept=".txt,.pdf,.docx" style="display:none" onchange="onFileSelected('review-file', 'review-file-name')">
+            <em>TXT / PDF / DOCX / JPG / PNG / WebP</em>
+            <input type="file" id="review-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('review-file', 'review-file-name')">
+          </div>
+          <div class="upload-action-row">
+            <button type="button" class="upload-action-btn" onclick="document.getElementById('review-file').click()">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              选择文件
+            </button>
+            <button type="button" class="upload-action-btn camera-action" onclick="openCameraCapture('review')">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3h5Z"/><circle cx="12" cy="13" r="3.5"/></svg>
+              拍照识别
+            </button>
+            <input type="file" id="review-camera" accept="image/*" capture="environment" class="camera-input" onchange="onCameraSelected('review')">
           </div>
           <span id="review-file-name" class="file-badge hidden"></span>
+          <div id="review-capture-preview" class="capture-preview hidden"><img alt="待识别图片预览"><span></span></div>
+          <p class="processing-hint">支持手机拍照合同；系统会尝试脱敏常见身份证号、手机号等，重要材料请先预览并人工核对。</p>
         </div>
         <button class="btn-primary" onclick="submitReview()">
           <span>开始审查</span>
@@ -1001,6 +1108,7 @@
 
       <!-- 注册表单 -->
       <form id="register-form" class="auth-form hidden" onsubmit="doRegister(); return false;">
+        <p class="auth-free-quota-note">注册即享 10 次免费 AI 调用，无需配置 API</p>
         <div class="auth-group">
           <label>用户名</label>
           <input type="text" id="register-username" placeholder="至少3个字符" autocomplete="username">
@@ -1018,6 +1126,6 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=20260527contract"></script>
+<script src="/static/js/main.js?v=20260927agent"></script>
 </body>
 </html>
