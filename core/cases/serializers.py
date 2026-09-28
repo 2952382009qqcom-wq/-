@@ -1,6 +1,19 @@
 from .models import CaseFavorite, CaseLawReference, CaseTag, LegalCaseCategory, LegalCaseTag
 
 
+SOURCE_TYPE_LABELS = {
+    "official_court": "最高人民法院公开案例",
+    "official_court_guiding": "最高人民法院指导性案例",
+    "official_court_gazette": "《最高人民法院公报》案例",
+    "official_court_typical": "最高人民法院典型案例",
+}
+
+LEGACY_LAW_NOTES = {
+    "最高人民法院指导性案例列明的关联法条",
+    "原裁判文书法院说理中提及；可能适用历史版本，请核对现行法律",
+}
+
+
 def _case_categories(case_id):
     from .models import CaseCategory
 
@@ -67,14 +80,16 @@ def serialize_case_detail(case, user_id=None, *, related_cases=None, discussions
         "source": {
             "publisher": case.source_publisher,
             "type": case.source_type,
+            "type_label": SOURCE_TYPE_LABELS.get(case.source_type, "法院公开案例"),
             "external_id": case.source_external_id,
             "url": case.source_url,
             "checked_at": case.source_checked_at.isoformat(timespec="minutes") if case.source_checked_at else "",
             "hash": case.source_hash,
         },
         "law_references": [
-            {"law_name": row.law_name, "article": row.article, "note": row.note}
+            {"law_name": row.law_name, "article": row.article, "note": "" if row.note in LEGACY_LAW_NOTES else row.note}
             for row in CaseLawReference.query.filter_by(case_id=case.id).all()
+            if row.article and row.article.strip()
         ],
         "related_cases": [serialize_case_card(item, user_id) for item in (related_cases or [])],
         "community_discussions": discussions or [],

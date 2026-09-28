@@ -34,7 +34,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13222.html",
         "categories": ("student-daily", "campus-rights"),
         "tags": ("学籍", "高校处分", "毕业证", "正当程序"),
-        "laws": (("中华人民共和国教育法", "", "高校颁发学业证书的职责"),),
+        "laws": (("中华人民共和国教育法", "第二十八条第一款第五项（案发时）；现行第二十九条第一款第五项、第四十三条第三项", "案发时第二十八条规定学校颁发学业证书的职责；现行第二十九条列明学校发证权，第四十三条保障学生完成学业后获得相应证书的权利。本案还涉及处分决定的申辩、送达程序。"),),
     },
     {
         "slug": "guiding-case-39-he-xiaoqiang-v-hust",
@@ -57,7 +57,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13223.html",
         "categories": ("student-daily", "campus-rights"),
         "tags": ("学位", "学术自治", "行政诉讼"),
-        "laws": (("中华人民共和国学位条例", "第四条、第八条", "学士学位授予条件"),),
+        "laws": (("中华人民共和国学位条例", "第四条、第八条（裁判当时适用）", "第四条涉及学士学位授予条件，第八条涉及学位评定程序。本案审查学校不授予学位的决定及学术标准；《学位条例》已非现行法，今天应核对《学位法》。"),),
     },
     {
         "slug": "guiding-case-180-sun-xianfeng-labor-termination",
@@ -80,7 +80,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/364641.html",
         "categories": ("student-daily", "daily-life", "labor"),
         "tags": ("违法解除", "解除通知", "赔偿金"),
-        "laws": (("中华人民共和国劳动合同法", "第三十九条", "用人单位单方解除条件"),),
+        "laws": (("中华人民共和国劳动合同法", "第三十九条", "第三十九条列举用人单位可以单方解除劳动合同的情形；本案强调解除通知载明的理由及证据，不能在诉讼中事后换理由。"),),
     },
     {
         "slug": "guiding-case-185-yan-jialin-equal-employment",
@@ -103,7 +103,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/364691.html",
         "categories": ("student-daily", "daily-life", "labor"),
         "tags": ("招聘", "就业歧视", "人格权"),
-        "laws": (("中华人民共和国就业促进法", "第三条、第二十六条", "平等就业与禁止就业歧视"),),
+        "laws": (("中华人民共和国就业促进法", "第三条、第二十六条", "第三条确认劳动者平等就业权，第二十六条要求招用人员不得实施就业歧视；本案讨论与岗位无关的地域筛选。"),),
     },
     {
         "slug": "guiding-case-23-sun-yinshan-food-safety",
@@ -126,7 +126,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13326.html",
         "categories": ("student-daily", "daily-life", "consumer"),
         "tags": ("食品安全", "消费赔偿", "过期食品"),
-        "laws": (("中华人民共和国食品安全法", "", "不符合食品安全标准食品的赔偿责任，具体条号应按现行法核验"),),
+        "laws": (("中华人民共和国食品安全法", "第九十六条第二款（案发时）；现行第一百四十八条第二款", "案发时第九十六条第二款规定食品价款十倍赔偿；现行第一百四十八条第二款规定不符合食品安全标准食品的惩罚性赔偿。本案讨论明知食品过期而购买是否仍可主张。"),),
     },
     {
         "slug": "guiding-case-170-rao-guoli-house-lease",
@@ -149,7 +149,7 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/331211.html",
         "categories": ("student-daily", "daily-life", "housing"),
         "tags": ("租赁安全", "押金", "合同无效"),
-        "laws": (("中华人民共和国民法典", "第一百五十三条、第一百五十七条", "违背公序良俗及民事法律行为无效后的处理"),),
+        "laws": (("中华人民共和国民法典", "第一百五十三条、第一百五十七条", "第一百五十三条涉及违背公序良俗的行为效力，第一百五十七条规定无效后财产返还和过错损失；本案对应危险房屋租赁及保证金返还。"),),
     },
     {
         "slug": "guiding-case-195-phone-code-personal-information",
@@ -172,20 +172,21 @@ VERIFIED_CASES = (
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/384441.html",
         "categories": ("student-daily", "social-hotspots", "daily-life", "cyber"),
         "tags": ("验证码", "个人信息", "账号安全"),
-        "laws": (("中华人民共和国刑法", "第二百五十三条之一", "侵犯公民个人信息罪"),),
+        "laws": (("中华人民共和国刑法", "第二百五十三条之一", "违反国家规定非法获取、出售或提供公民个人信息，情节严重的构成犯罪；本案手机号及验证码可用于识别、验证特定自然人。"),),
     },
 )
 
 
 CASE_LIBRARY_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_500.json"
+STUDENT_CASES_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_student_200.json"
 
 
-def _load_bundled_cases():
-    """Load the generated, reviewable case data without any runtime crawling."""
-    payload = json.loads(CASE_LIBRARY_PATH.read_text(encoding="utf-8"))
+def _load_case_file(path, expected_count):
+    """Load a reviewable, offline case snapshot without runtime crawling."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
     rows = payload.get("cases", [])
-    if payload.get("schema_version") != 1 or len(rows) != 493:
-        raise RuntimeError("bundled legal case library is missing or has an unexpected schema")
+    if payload.get("schema_version") != 1 or len(rows) != expected_count:
+        raise RuntimeError(f"case library {path.name} is missing or has an unexpected schema")
     normalized = []
     for raw in rows:
         item = dict(raw)
@@ -203,11 +204,16 @@ def _load_bundled_cases():
             (law["law_name"], law.get("article", ""), law.get("note", ""))
             for law in item.get("laws") or ()
         )
+        if not item.get("source_hash"):
+            digest_source = "|".join(str(item.get(key, "")) for key in ("title", "case_number", "summary", "judgment_result", "source_url"))
+            item["source_hash"] = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
         normalized.append(item)
     return tuple(normalized)
 
 
-BUNDLED_CASES = _load_bundled_cases()
+BUNDLED_CASES = _load_case_file(CASE_LIBRARY_PATH, 493)
+STUDENT_CASES = _load_case_file(STUDENT_CASES_PATH, 200)
+REFRESHED_CASE_SLUGS = {item["slug"] for item in VERIFIED_CASES + RECENT_CASES}
 
 
 def seed_reference_data():
@@ -221,9 +227,16 @@ def seed_reference_data():
             db.session.add(CaseCategory(slug=slug, name=name, description=description, sort_order=index))
     db.session.flush()
 
-    for definition in VERIFIED_CASES + BUNDLED_CASES + RECENT_CASES:
+    for definition in VERIFIED_CASES + BUNDLED_CASES + RECENT_CASES + STUDENT_CASES:
         row = LegalCase.query.filter_by(slug=definition["slug"]).first()
         if row is not None:
+            if definition["slug"] in REFRESHED_CASE_SLUGS:
+                refs = CaseLawReference.query.filter_by(case_id=row.id).all()
+                if len(refs) == 1 and definition["laws"]:
+                    law_name, article, note = definition["laws"][0]
+                    refs[0].law_name = law_name
+                    refs[0].article = article
+                    refs[0].note = note
             continue
         public_fields = {key: value for key, value in definition.items() if key not in {"categories", "tags", "laws"}}
         digest_source = "|".join(str(public_fields.get(key, "")) for key in ("title", "case_number", "summary", "judgment_result", "source_url"))
@@ -258,4 +271,4 @@ def seed_reference_data():
         for law_name, article, note in definition["laws"]:
             db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
     db.session.commit()
-    process_outbox(limit=600)
+    process_outbox(limit=900)

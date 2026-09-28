@@ -107,9 +107,9 @@ async function openCaseDetail(caseId) {
     const hero = item.media?.image_url ? `<figure class="case-detail-media"><img src="${escapeHtml(item.media.image_url)}" alt="${escapeHtml(item.media.image_alt || item.title)}"><figcaption>图片来源：<a href="${escapeHtml(item.media.image_source_url || item.source.url)}" target="_blank" rel="noopener noreferrer">官方原页</a></figcaption></figure>` : "";
     target.innerHTML = `${hero}<div class="case-detail-lead"><button class="case-detail-save" onclick="toggleCaseFavorite(${item.id})">${item.favorited ? "★ 已收藏" : "☆ 收藏案例"}</button><div class="case-detail-meta"><span>✓ 已核验</span><span>${escapeHtml(item.guiding_case_number || item.case_number || "")}</span><span>${escapeHtml(item.court_name || "")}</span><span>${escapeHtml(item.decision_date || "")}</span></div><h2>${escapeHtml(item.title)}</h2><div class="case-keywords">${(item.keywords || []).map(word => `<i>${escapeHtml(word)}</i>`).join("")}</div></div>
       <div class="case-structure">
-        ${caseSection("案例摘要", item.summary, "full")}${caseSection("争议焦点", item.dispute_focus)}${caseSection("裁判结果", item.judgment_result)}${caseSection("裁判逻辑", item.judgment_reasoning, "full")}${caseSection("AI 通俗解读", item.ai_plain_language, "full ai")}
+        ${caseSection("案例摘要", item.summary, "full")}${caseSection("争议焦点", item.dispute_focus)}${caseSection("处理或裁判结果", item.judgment_result)}${caseSection("处理依据与要点", item.judgment_reasoning, "full")}${caseSection("学生视角提示", item.ai_plain_language, "full ai")}
       </div>
-      <div class="case-source"><b>来源：</b>${escapeHtml(item.source.publisher || "权威公开来源")} · ${escapeHtml(item.source.type || "")}　<a href="${escapeHtml(item.source.url)}" target="_blank" rel="noopener noreferrer">查看官方原文 ↗</a>${refs ? `<div class="case-law-refs"><h4>关联法条与阅读提示</h4><ul>${refs}</ul></div>` : ""}</div>
+      <div class="case-source"><b>来源：</b>${escapeHtml(item.source.publisher || "权威公开来源")} · ${escapeHtml(item.source.type_label || "法院公开案例")}　<a href="${escapeHtml(item.source.url)}" target="_blank" rel="noopener noreferrer">查看官方原文 ↗</a><div class="case-law-refs"><h4>关联法条与适用说明</h4>${refs ? `<ul>${refs}</ul>` : '<p>官方材料中暂未核实到具体条号，请查看原文，不以笼统法律名称代替条文。</p>'}</div></div>
       ${renderCaseCrosslinks(item)}`;
   } catch (error) { target.innerHTML = `<div class="module-empty">${escapeHtml(error.message)}</div>`; }
 }
