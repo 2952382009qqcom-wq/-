@@ -8,6 +8,7 @@ from flask import current_app
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from core.cases.models import LegalCase
+from core.cases.matching import find_context_cases
 from core.models import Conversation, ConversationMessage, db
 from core.privacy import RedactionSession, public_redaction_summary
 from core.recommendations.events import record_event
@@ -60,12 +61,12 @@ def related_cases_for_post(post, limit=4):
     ]
     if len(linked) >= limit:
         return linked
-    domain = domain_for_category(post.category.slug)
+    post_context = f"{post.title}\n{post.body}"
+    domain = infer_legal_domain(post_context, fallback=domain_for_category(post.category.slug))
     excluded = [item.id for item in linked]
-    query = LegalCase.query.filter_by(status="published", verification_status="verified", legal_domain=domain)
-    if excluded:
-        query = query.filter(~LegalCase.id.in_(excluded))
-    linked.extend(query.order_by(LegalCase.favorite_count.desc(), LegalCase.view_count.desc()).limit(limit - len(linked)).all())
+    linked.extend(find_context_cases(
+        post_context, domain, limit=limit - len(linked), exclude_ids=excluded,
+    ))
     return linked
 
 

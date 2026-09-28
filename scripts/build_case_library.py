@@ -18,30 +18,20 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from datetime import date
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.taxonomy import DOMAIN_LABELS, classify_case_content
 
 
 CORE_CASE_NUMBERS = {23, 38, 39, 170, 180, 185, 195}
 SELECTED_CASE_NUMBERS = set(range(1, 280)) - CORE_CASE_NUMBERS
 GAZETTE_TARGET = 222
-
-CATEGORY_DEFINITIONS = {
-    "campus-rights": ("campus", "校园权益", ("学生", "高校", "学校", "教育", "学位", "学籍", "考试", "校园", "教师")),
-    "labor": ("labor", "实习就业", ("劳动", "就业", "工资", "工伤", "竞业", "社保", "用人单位", "招聘", "职业")),
-    "housing": ("housing", "租房居住", ("房屋租赁", "租房", "物业", "居住", "商品房", "房产", "拆迁", "居间合同")),
-    "consumer": ("consumer", "消费维权", ("消费", "买卖合同", "食品", "服务合同", "网络购物", "产品责任", "旅游", "退货", "电信服务")),
-    "cyber": ("cyber", "网络安全", ("网络", "个人信息", "隐私", "数据", "互联网", "电信诈骗", "账号", "信息网络", "计算机")),
-    "family": ("family", "婚姻家庭", ("婚姻", "家庭", "继承", "抚养", "探望", "监护", "离婚", "赡养")),
-    "finance": ("finance", "金融借贷", ("金融", "借贷", "银行", "信用卡", "证券", "保险", "担保", "贷款", "融资")),
-    "transport": ("transport", "交通出行", ("交通事故", "机动车", "航空旅客", "铁路", "船舶", "海事", "运输合同")),
-    "medical": ("medical", "生命健康", ("医疗", "药品", "健康", "人身损害", "生命权", "身体权", "医院")),
-    "intellectual-property": ("ip", "知识产权", ("知识产权", "专利", "著作权", "商标", "植物新品种", "商业秘密", "不正当竞争")),
-    "environment": ("environment", "环境生态", ("环境", "污染", "生态", "林业", "野生动物", "公益诉讼", "自然保护")),
-    "public-governance": ("public", "行政法治", ("行政", "国家赔偿", "政府", "税务", "信息公开", "征收", "公安局")),
-    "criminal": ("criminal", "刑事风险", ("刑事", "诈骗罪", "盗窃罪", "故意伤害", "危险驾驶", "贪污", "受贿", "非法经营", "开设赌场")),
-    "civil-business": ("civil", "民商事", ("公司", "股权", "合同纠纷", "破产", "执行", "仲裁", "买卖")),
-}
 
 EVIDENCE_TIPS = {
     "campus": "保留校规、处分决定、送达凭证和申辩记录",
@@ -70,19 +60,6 @@ def compact(value: object) -> str:
 def clipped(value: object, limit: int) -> str:
     text = compact(value)
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-def classify(text: str, keywords: list[str]) -> tuple[str, str, str]:
-    haystack = text + " " + " ".join(keywords)
-    scores = {
-        slug: sum(1 for term in terms if term in haystack)
-        for slug, (_, _, terms) in CATEGORY_DEFINITIONS.items()
-    }
-    slug = max(scores, key=scores.get)
-    if scores[slug] == 0:
-        slug = "criminal" if "刑事" in haystack else "civil-business"
-    domain, label, _ = CATEGORY_DEFINITIONS[slug]
-    return slug, domain, label
 
 
 def extract_case_number(text: str) -> str:
@@ -175,9 +152,13 @@ def build_record(raw: dict) -> dict:
     gist = clipped(raw.get("gist", []), 1400)
     result = clipped(raw.get("result", []), 1600)
     reasoning = clipped(raw.get("reasoning", []), 2600)
-    searchable = " ".join((title, facts, gist, reasoning, " ".join(keywords)))
-    category_slug, legal_domain, category_label = classify(searchable, keywords)
     case_type = infer_case_type(keywords, title)
+    cause = infer_cause(title, keywords)
+    category_slug, legal_domain = classify_case_content(
+        title=title, cause=cause, keywords=keywords, dispute_focus=gist,
+        case_type=case_type,
+    )
+    category_label = DOMAIN_LABELS[legal_domain]
     law_refs = parse_laws(raw.get("relatedLaws", []), case_type)
     law_names = "、".join(item["law_name"] for item in law_refs[:3])
     tip = EVIDENCE_TIPS[legal_domain]
@@ -192,20 +173,8 @@ def build_record(raw: dict) -> dict:
         "|".join((title, gist, result, source_url)).encode("utf-8")
     ).hexdigest()
     tags = [item for item in keywords if item not in {"民事", "刑事", "行政", "执行"}]
-    if legal_domain in {"campus", "labor", "housing", "consumer", "cyber"}:
-        tags.append("大学生高频")
-    if published >= "2021-01-01":
-        tags.append("社会热点")
-    if legal_domain in {"family", "housing", "consumer", "transport", "cyber", "labor"}:
-        tags.append("日常生活")
     tags = list(dict.fromkeys(tags))[:8]
     categories = [category_slug]
-    if "大学生高频" in tags:
-        categories.append("student-daily")
-    if "社会热点" in tags:
-        categories.append("social-hotspots")
-    if "日常生活" in tags:
-        categories.append("daily-life")
     result_text = compact(raw.get("result", []))
     return {
         "slug": f"guiding-case-{number}",
@@ -214,7 +183,7 @@ def build_record(raw: dict) -> dict:
         "guiding_case_number": f"指导性案例{number}号",
         "court_name": extract_court(result_text),
         "case_type": case_type,
-        "cause": infer_cause(title, keywords),
+        "cause": cause,
         "legal_domain": legal_domain,
         "decision_date": extract_decision_date(result_text),
         "published_at": f"{published}T00:00:00" if published else "",
@@ -362,10 +331,13 @@ def build_gazette_record(raw: dict) -> dict | None:
     if len(summary) < 80 or len(reasoning) < 80 or not all((focus, result)):
         return None
 
-    title_has_category = any(term in title for _, _, terms in CATEGORY_DEFINITIONS.values() for term in terms)
-    category_slug, domain, category_label = classify(title if title_has_category else title + " " + summary + " " + focus, [])
     case_number = compact(raw.get("caseNumber"))
     case_type = "刑事" if "刑" in case_number else "行政" if "行" in case_number else "民事"
+    cause = clipped(title.removesuffix("案").split("等")[-1], 160)
+    category_slug, domain = classify_case_content(
+        title=title, cause=cause, dispute_focus=focus, case_type=case_type,
+    )
+    category_label = DOMAIN_LABELS[domain]
     year = int(raw["issueYear"])
     issue = int(raw["issueNo"])
     tip = EVIDENCE_TIPS[domain]
@@ -375,15 +347,7 @@ def build_gazette_record(raw: dict) -> dict | None:
         "请先看本案实际裁判理由和结果，再核对目前有效的法律与司法解释。"
     )
     tags = ["公报裁判", f"{year}年公报", category_label]
-    if domain in {"campus", "labor", "housing", "consumer", "cyber"}:
-        tags.append("大学生高频")
-    if domain in {"family", "housing", "consumer", "transport", "cyber", "labor"}:
-        tags.append("日常生活")
     categories = [category_slug]
-    if "大学生高频" in tags:
-        categories.append("student-daily")
-    if "日常生活" in tags:
-        categories.append("daily-life")
     source_url = compact(raw.get("sourceUrl")).replace("http://gongbao.court.gov.cn/", "https://gongbao.court.gov.cn/", 1)
     digest = hashlib.sha256("|".join((title, summary, reasoning, result, source_url)).encode("utf-8")).hexdigest()
     return {
@@ -393,7 +357,7 @@ def build_gazette_record(raw: dict) -> dict | None:
         "guiding_case_number": "",
         "court_name": clipped(raw.get("court"), 160),
         "case_type": case_type,
-        "cause": clipped(title.removesuffix("案").split("等")[-1], 160),
+        "cause": cause,
         "legal_domain": domain,
         "decision_date": "",
         "published_at": "",  # An issue number is not an exact publication date.
@@ -440,9 +404,7 @@ def build(source: Path, gazette_source: Path) -> dict:
         if record:
             year = int(raw["issueYear"])
             focus_bonus = 20 if "具体争点请" not in record["dispute_focus"] else 0
-            student_bonus = 35 if "大学生高频" in record["tags"] else 0
-            daily_bonus = 15 if "日常生活" in record["tags"] else 0
-            gazette_candidates.append((year, 6 * (year - 2000) + focus_bonus + student_bonus + daily_bonus, record))
+            gazette_candidates.append((year, 6 * (year - 2000) + focus_bonus, record))
     # Exhaust recent usable judgments before using older, topical classics.
     gazette_candidates.sort(key=lambda pair: (-(pair[0] >= 2020), -(pair[0] >= 2015), -pair[1], pair[2]["source_external_id"]))
     gazette_records = []

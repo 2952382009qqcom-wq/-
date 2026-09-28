@@ -49,6 +49,22 @@ google-services.json
 .gradle/
 **/build/
 
+# Retired one-off content generators and local research helpers
+/generate_business_plan_*.py
+/generate_ppt*.py
+/generate_ppt*.js
+/generate_proposal.py
+/rewrite_internship_report*.py
+/qianduanmeihua.md
+/search_body.json
+/expand_provisions.py
+/fetch_law_meta.py
+/scrape_flk.py
+/scrape_laws.py
+/tools/create_development_plan_ppt.ps1
+/tools/generate_development_plan_single_ppt.js
+/tools/replace_docx_tables_with_figures.py
+
 # OS/editor files
 .DS_Store
 Thumbs.db

@@ -76,9 +76,17 @@ def validate() -> dict:
         errors.append(f"expected at least 12 legal categories, got {len(category_counts)}")
     if court_count < 100:
         errors.append(f"expected at least 100 distinct court labels, got {court_count}")
-    for tag, minimum in (("大学生高频", 35), ("社会热点", 100), ("日常生活", 45)):
-        if tag_counts[tag] < minimum:
-            errors.append(f"expected at least {minimum} cases tagged {tag}, got {tag_counts[tag]}")
+    legacy_buckets = {"大学生高频", "社会热点", "日常生活"}
+    leaked = sorted(tag for tag in legacy_buckets if tag_counts[tag])
+    if leaked:
+        errors.append(f"legacy broad tags must not be used as legal categories: {leaked}")
+    invalid_categories = [
+        case.get("source_external_id") for case in cases
+        if len(case.get("categories") or []) != 1
+        or case["categories"][0] in {"student-daily", "social-hotspots", "daily-life"}
+    ]
+    if invalid_categories:
+        errors.append(f"cases must have one precise domain category: {invalid_categories[:5]}")
     gazette_recent = sum(
         int(next((tag[:4] for tag in case["tags"] if tag.endswith("年公报")), "0")) >= 2015
         for case in cases if case.get("source_type") == "official_court_gazette"
@@ -93,7 +101,7 @@ def validate() -> dict:
         "total_cases": payload["total_with_core_cases"],
         "categories": dict(sorted(category_counts.items())),
         "distinct_courts": court_count,
-        "topic_tags": {key: tag_counts[key] for key in ("大学生高频", "社会热点", "日常生活")},
+        "legacy_broad_tags": {key: tag_counts[key] for key in sorted(legacy_buckets)},
         "source_types": dict(source_types),
         "gazette_2015_or_later": gazette_recent,
     }

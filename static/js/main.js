@@ -711,6 +711,29 @@ function formatFileSize(size) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+async function saveBlobDownload(blob, filename) {
+  const safeName = String(filename || "明鉴文书").replace(/[\\/:*?"<>|]+/g, "_");
+  if (window.MingJianDownloads && typeof window.MingJianDownloads.saveBase64File === "function") {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("读取下载文件失败"));
+      reader.readAsDataURL(blob);
+    });
+    const base64 = dataUrl.includes(",") ? dataUrl.split(",", 2)[1] : dataUrl;
+    window.MingJianDownloads.saveBase64File(base64, blob.type || "application/octet-stream", safeName);
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = safeName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
 function onAgentFileSelected(input, fromCamera = false) {
   const file = input && input.files && input.files[0];
   if (!file) return;
@@ -821,11 +844,13 @@ function finishAgentMessage(article, result) {
     tools.appendChild(button);
   });
   if (result.document && result.can_export) {
-    const documentButton = document.createElement("button");
-    documentButton.type = "button";
-    documentButton.textContent = "导出 Word";
-    documentButton.addEventListener("click", exportAgentDocument);
-    tools.appendChild(documentButton);
+    [["导出 Word", "docx"], ["导出 PDF", "pdf"]].forEach(([label, format]) => {
+      const documentButton = document.createElement("button");
+      documentButton.type = "button";
+      documentButton.textContent = label;
+      documentButton.addEventListener("click", () => exportAgentDocument(format));
+      tools.appendChild(documentButton);
+    });
   }
   if (result.conversation_id || legalAgentState.conversationId) {
     const communityButton = document.createElement("button");
@@ -997,7 +1022,7 @@ async function deleteAgentConversation(conversationId) {
   loadAgentConversations();
 }
 
-function exportAgentConversation() {
+async function exportAgentConversation() {
   if (!legalAgentState.messages.length) { alert("当前会话还没有可导出的内容"); return; }
   const lines = ["# 明鉴法律智能体会话", "", `导出时间：${new Date().toLocaleString("zh-CN")}`, ""];
   legalAgentState.messages.forEach(item => {
@@ -1005,31 +1030,22 @@ function exportAgentConversation() {
   });
   lines.push("> 提示：本记录不替代律师正式法律意见，法条效力状态请到官方数据库核验。");
   const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `明鉴法律智能体_${new Date().toISOString().slice(0, 10)}.md`;
-  link.click();
-  URL.revokeObjectURL(url);
+  await saveBlobDownload(blob, `明鉴法律智能体_${new Date().toISOString().slice(0, 10)}.md`);
 }
 
-async function exportAgentDocument() {
+async function exportAgentDocument(format = "docx") {
   const doc = legalAgentState.lastResult && legalAgentState.lastResult.document;
   if (!doc || !doc.body) return;
   try {
-    const response = await fetch("/api/download-docx", {
+    const extension = format === "pdf" ? "pdf" : "docx";
+    const response = await fetch(`/api/download-${extension}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: doc.title || "法律文书", body: doc.body, header: doc.header || {}, doc_type: doc.document_type || "" }),
     });
     if (!response.ok) throw new Error("文书导出失败");
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${doc.title || "法律文书"}.docx`;
-    link.click();
-    URL.revokeObjectURL(url);
+    await saveBlobDownload(blob, `${doc.title || "法律文书"}.${extension}`);
   } catch (error) {
     alert(error.message || "文书导出失败");
   }
@@ -1809,7 +1825,7 @@ function renderGenerateResult(result) {
     html += `<div class="result-section-title">注意事项</div><ul>${result.notes.map(n => `<li>${escapeHtml(n)}</li>`).join("")}</ul>`;
   }
   if (result.body) {
-    html += `<button class="btn-primary" style="width:auto;margin-top:20px;" onclick="downloadDoc()">下载文书</button>`;
+    html += `<div class="document-download-actions"><button class="btn-primary" onclick="downloadDoc('docx')">下载 Word</button><button class="btn-secondary" onclick="downloadDoc('pdf')">下载 PDF</button></div>`;
   }
   return html;
 }
@@ -2322,14 +2338,15 @@ function contractFieldLabel(key) {
   }[key] || key;
 }
 
-async function downloadDoc() {
+async function downloadDoc(format = "docx") {
   if (!window._generatedDoc || !window._generatedDoc.body) return;
   const title = window._generatedDoc.title || "法律文书";
   const body = window._generatedDoc.body || "";
   const header = window._generatedDoc.header || {};
 
   try {
-    const resp = await fetch("/api/download-docx", {
+    const extension = format === "pdf" ? "pdf" : "docx";
+    const resp = await fetch(`/api/download-${extension}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2351,14 +2368,9 @@ async function downloadDoc() {
     });
     if (!resp.ok) throw new Error("生成失败");
     const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title}.docx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    await saveBlobDownload(blob, `${title}.${extension}`);
   } catch (e) {
-    alert("DOCX 下载失败: " + e.message);
+    alert(`${format === "pdf" ? "PDF" : "Word"} 下载失败: ${e.message}`);
   }
 }
 

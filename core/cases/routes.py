@@ -3,30 +3,82 @@ from flask_login import current_user, login_required
 from sqlalchemy import or_
 
 from core.extensions import limiter
-from core.models import db
+from core.models import Conversation, ConversationMessage, db
 from core.recommendations.events import record_event, set_personalization
 from core.recommendations.models import UserInterestProfile
 from core.recommendations.ranking import recommend_cases
 from core.recommendations.config import ALGORITHM_VERSION, COMPATIBILITY_ALIAS
 from core.search.client import search_ids
-from core.taxonomy import safe_search_terms
+from core.taxonomy import DOMAIN_LABELS, expand_legal_query, infer_legal_domain, safe_search_terms
 
 from .models import CaseCategory, CaseFavorite, LegalCase, LegalCaseCategory
 from .serializers import serialize_case_card, serialize_case_detail
 from .services import related_cases, related_discussions
+from .student_cases import STUDENT_CASE_SLUGS
 
 
 cases_bp = Blueprint("cases", __name__, url_prefix="/api/cases")
+
+
+def _recommendation_context(user_id):
+    """Resolve the active/recent legal conversation without exposing its text."""
+    search = request.args.get("q", "").strip()[:240]
+    if search:
+        domain = infer_legal_domain(search)
+        return expand_legal_query(search), domain, {
+            "source": "search", "label": f"当前检索：{search[:36]}", "domain": domain,
+            "domain_label": DOMAIN_LABELS.get(domain, DOMAIN_LABELS["other"]),
+        }
+
+    conversation_id = request.args.get("conversation_id", "").strip()[:36]
+    query = Conversation.query.filter_by(user_id=user_id)
+    conversation = query.filter_by(id=conversation_id).first() if conversation_id else None
+    if conversation is None:
+        conversation = query.order_by(Conversation.updated_at.desc()).first()
+    if conversation is None:
+        return "", "", {
+            "source": "history", "label": "尚无咨询上下文", "domain": "other",
+            "domain_label": DOMAIN_LABELS["other"],
+        }
+
+    messages = ConversationMessage.query.filter_by(
+        conversation_id=conversation.id, role="user",
+    ).order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc()).limit(5).all()
+    latest = next((item.content.strip() for item in messages if item.content.strip()), "")
+    latest_domain = infer_legal_domain(latest)
+    if latest_domain != "other":
+        context_text = expand_legal_query(latest)
+        domain = latest_domain
+    else:
+        recent_text = "\n".join(
+            item.content.strip() for item in reversed(messages) if item.content.strip()
+        )[-5000:]
+        context_text = expand_legal_query(recent_text)
+        domain = infer_legal_domain(recent_text)
+    label = latest[:36] + ("…" if len(latest) > 36 else "")
+    return context_text, domain, {
+        "source": "conversation",
+        "label": label or conversation.title or "最近一次法律咨询",
+        "conversation_id": conversation.id,
+        "domain": domain,
+        "domain_label": DOMAIN_LABELS.get(domain, DOMAIN_LABELS["other"]),
+    }
 
 
 @cases_bp.get("/categories")
 @login_required
 def categories():
     rows = CaseCategory.query.filter_by(is_active=True).order_by(CaseCategory.sort_order.asc()).all()
+    student_total = LegalCase.query.filter_by(status="published", verification_status="verified").filter(
+        LegalCase.slug.in_(STUDENT_CASE_SLUGS)
+    ).count()
     return jsonify({"categories": [
         {"id": row.id, "slug": row.slug, "name": row.name, "description": row.description}
         for row in rows
-    ]})
+    ], "audiences": [{
+        "slug": "student-verified", "name": "学生事实明确", "count": student_total,
+        "description": "仅收录案情中明确出现学生、高校或校园身份的案例",
+    }]})
 
 
 @cases_bp.get("")
@@ -36,6 +88,9 @@ def list_cases():
     page = max(1, request.args.get("page", 1, type=int))
     per_page = max(1, min(request.args.get("per_page", 12, type=int), 30))
     query = LegalCase.query.filter_by(status="published", verification_status="verified")
+    audience = request.args.get("audience", "").strip()
+    if audience == "student-verified":
+        query = query.filter(LegalCase.slug.in_(STUDENT_CASE_SLUGS))
     category = request.args.get("category", "").strip()
     if category:
         query = query.join(LegalCaseCategory, LegalCaseCategory.case_id == LegalCase.id).join(
@@ -77,16 +132,18 @@ def recommendations():
     profile = UserInterestProfile.query.filter_by(user_id=current_user.id).first()
     if profile is not None and not profile.personalization_enabled:
         return jsonify({"cases": [], "algorithm": COMPATIBILITY_ALIAS, "algorithm_version": ALGORITHM_VERSION, "personalization_enabled": False})
+    context_text, context_domain, context_meta = _recommendation_context(current_user.id)
+    requested_domain = request.args.get("domain", "")[:40]
     ranked = recommend_cases(
         current_user.id,
         request.args.get("limit", 8, type=int),
-        context_text=request.args.get("q", "")[:120],
-        domain=request.args.get("domain", "")[:40],
-    )
+        context_text=context_text,
+        domain=requested_domain or context_domain,
+    ) if context_text else []
     return jsonify({"cases": [
         serialize_case_card(case, current_user.id, recommendation={"score": score, "reasons": reasons})
         for case, score, reasons in ranked
-    ], "algorithm": COMPATIBILITY_ALIAS, "algorithm_version": ALGORITHM_VERSION, "personalization_enabled": True})
+    ], "context": context_meta, "algorithm": COMPATIBILITY_ALIAS, "algorithm_version": ALGORITHM_VERSION, "personalization_enabled": True})
 
 
 @cases_bp.post("/<int:case_id>/events")

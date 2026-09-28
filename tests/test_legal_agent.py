@@ -33,6 +33,7 @@ from core.legal_agent import (
     compose_chat_answer,
     detect_intent,
 )
+from core.legal_guidance import legal_anchors_for_question, requires_legal_basis
 from core.models import Conversation, ConversationMessage
 
 
@@ -74,6 +75,33 @@ class LegalAgentRoutingTests(unittest.TestCase):
         self.assertIn("不要输出 [L1]", prompt)
         self.assertNotIn("本地法律证据（JSON", prompt)
         self.assertNotIn("BM25", prompt)
+
+    def test_legal_characterisation_questions_receive_verified_articles(self):
+        self.assertFalse(requires_legal_basis("我被打了怎么办"))
+        self.assertTrue(requires_legal_basis("我能打回去吗"))
+        self.assertTrue(requires_legal_basis("抢劫可以定啥罪"))
+        defense = legal_anchors_for_question("我能打回去吗")
+        robbery = legal_anchors_for_question("抢劫可以定啥罪")
+        self.assertEqual(defense[0]["article"], "第二十条")
+        self.assertEqual(robbery[0]["article"], "第二百六十三条")
+
+        prompt = build_general_prompt(
+            "我能打回去吗",
+            "用户刚才说自己被打。",
+            verified_legal_anchors=defense,
+            legal_basis_required=True,
+        )
+        self.assertIn("legal_basis 必须列出", prompt)
+        self.assertIn("第二十条", prompt)
+
+        answer = compose_chat_answer(
+            INTENT_GENERAL,
+            {"answer": "正在受到攻击时可以采取必要制止行为，但不能事后报复。"},
+            legal_basis_fallback=defense,
+            required_legal_basis=True,
+        )
+        self.assertIn("法律依据", answer)
+        self.assertIn("第二十条", answer)
 
 
 class LegalAgentEndpointTests(unittest.TestCase):

@@ -1,17 +1,17 @@
 """Recommendation settings kept in one place for safe tuning and rollback."""
 
-ALGORITHM_VERSION = "layered-v2"
+ALGORITHM_VERSION = "latest-legal-concept-v4"
 COMPATIBILITY_ALIAS = "hybrid-v1"
 
 RANKING_WEIGHTS = {
-    "domain": 0.29,
-    "text": 0.22,
+    "domain": 0.32,
+    "text": 0.30,
     "favorite": 0.14,
     "recency": 0.07,
     "popularity": 0.07,
-    "freshness": 0.06,
+    "freshness": 0.12,
     "source_trust": 0.06,
-    "exploration": 0.05,
+    "exploration": 0.01,
     "collaborative": 0.04,
     "repeat_exposure": -0.12,
     "negative_feedback": -0.30,

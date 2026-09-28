@@ -1,4 +1,4 @@
-const casesState = { categories: [], category: "", feed: "latest", page: 1, hasNext: false, currentCaseId: null };
+const casesState = { categories: [], category: "", audience: "", feed: "latest", page: 1, hasNext: false, currentCaseId: null };
 
 async function casesFetch(url, options = {}) {
   const response = await fetch(url, options);
@@ -17,10 +17,16 @@ async function initCases() {
     personalization.checked = preference.enabled !== false;
     document.getElementById("case-recommendation-section").classList.toggle("hidden", !personalization.checked);
     const chips = document.getElementById("cases-categories");
-    chips.innerHTML = `<button type="button" class="active" data-category="">全部领域</button>${casesState.categories.map(item => `<button type="button" data-category="${escapeHtml(item.slug)}">${escapeHtml(item.name)}</button>`).join("")}`;
+    const studentAudience = (data.audiences || []).find(item => item.slug === "student-verified");
+    const studentChip = studentAudience
+      ? `<button type="button" class="student-case-chip" data-category="" data-audience="student-verified" title="${escapeHtml(studentAudience.description || "")}">${escapeHtml(studentAudience.name)} · ${studentAudience.count || 0}</button>`
+      : "";
+    chips.innerHTML = `<button type="button" class="active" data-category="" data-audience="">全部场景</button>${studentChip}${casesState.categories.map(item => `<button type="button" data-category="${escapeHtml(item.slug)}" data-audience="">${escapeHtml(item.name)}</button>`).join("")}`;
     chips.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
       casesState.category = button.dataset.category || "";
+      casesState.audience = button.dataset.audience || "";
       chips.querySelectorAll("button").forEach(item => item.classList.toggle("active", item === button));
+      document.getElementById("student-case-note")?.classList.toggle("hidden", casesState.audience !== "student-verified");
       loadCases({ reset: true });
     }));
     document.querySelectorAll("#cases-feeds button").forEach(button => button.addEventListener("click", () => {
@@ -44,6 +50,7 @@ async function loadCases({ reset = true } = {}) {
   const params = new URLSearchParams({ feed: casesState.feed, per_page: "20", page: String(casesState.page) });
   const query = document.getElementById("cases-query")?.value.trim();
   if (casesState.category) params.set("category", casesState.category);
+  if (casesState.audience) params.set("audience", casesState.audience);
   if (query) params.set("q", query);
   try {
     const data = await casesFetch(`/api/cases?${params}`);
@@ -66,13 +73,14 @@ async function loadMoreCases() {
 function renderCaseCard(item) {
   const number = item.guiding_case_number || item.case_number || item.cause || "公开案例";
   const category = item.categories?.[0]?.name || "典型案例";
+  const year = item.reference_year ? `${item.reference_year}年` : "年份以原文为准";
   const image = item.media?.image_url;
   const visual = image
     ? `<div class="case-card-media"><img src="${escapeHtml(image)}" alt="${escapeHtml(item.media?.image_alt || item.title)}" loading="lazy" referrerpolicy="no-referrer"></div>`
     : `<div class="case-card-media case-card-placeholder" data-domain="${escapeHtml(item.legal_domain || "civil")}"><span>${escapeHtml(category.slice(0, 4))}</span></div>`;
   return `<article class="case-card" onclick="openCaseDetail(${item.id})">
     ${visual}
-    <div class="case-card-top"><span class="case-verified">✓ 来源已核验</span><span class="case-number">${escapeHtml(number)}</span></div>
+    <div class="case-card-top"><span class="case-verified">✓ ${escapeHtml(category)}</span><span class="case-number">${escapeHtml(year)} · ${escapeHtml(number)}</span></div>
     <h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p>
     <div class="case-card-foot"><span>${escapeHtml(item.court_name || item.cause || "")}</span><span>阅读 ${item.view_count} · 收藏 ${item.favorite_count}</span></div>
   </article>`;
@@ -82,9 +90,31 @@ async function loadCaseRecommendations() {
   const target = document.getElementById("case-recommendations");
   if (!target || !document.getElementById("cases-personalization")?.checked) return;
   try {
-    const data = await casesFetch("/api/cases/recommendations?limit=6");
-    target.innerHTML = (data.cases || []).map(item => `<button class="case-recommendation-card" onclick="openCaseDetail(${item.id})"><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.summary.slice(0, 70))}</p><small>${escapeHtml(item.recommendation?.reasons?.[0] || "权威案例")}</small></button>`).join("") || '<div class="module-empty">浏览、搜索或收藏案例后，推荐会逐步贴合你的关注方向。</div>';
+    const params = new URLSearchParams({ limit: "6" });
+    const query = document.getElementById("cases-query")?.value.trim();
+    if (query) params.set("q", query);
+    else if (typeof legalAgentState !== "undefined" && legalAgentState.conversationId) params.set("conversation_id", legalAgentState.conversationId);
+    const data = await casesFetch(`/api/cases/recommendations?${params}`);
+    renderCaseContext(data.context || {});
+    target.innerHTML = (data.cases || []).map(item => {
+      const year = item.reference_year ? `${item.reference_year}年` : "年份见原文";
+      const reason = item.recommendation?.reasons?.[0] || "与当前法律场景相关";
+      return `<button class="case-recommendation-card" onclick="openCaseDetail(${item.id})"><span>${escapeHtml(year)} · ${escapeHtml(item.categories?.[0]?.name || "典型案例")}</span><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.summary.slice(0, 82))}</p><small>${escapeHtml(reason)}</small></button>`;
+    }).join("") || '<div class="module-empty">当前咨询没有找到足够可靠且较新的匹配案例。你可以补充更具体的事实，或用上方关键词检索。</div>';
   } catch (error) { target.innerHTML = `<div class="module-empty">${escapeHtml(error.message)}</div>`; }
+}
+
+function renderCaseContext(context) {
+  const title = document.getElementById("case-context-title");
+  const copy = document.getElementById("case-context-copy");
+  const banner = document.getElementById("case-context-banner");
+  if (!title || !copy || !banner) return;
+  const fromConversation = context.source === "conversation";
+  title.textContent = fromConversation ? `正在关联：${context.label || "最近一次咨询"}` : (context.label || "尚无咨询上下文");
+  copy.textContent = context.domain && context.domain !== "other"
+    ? `识别为“${context.domain_label || "综合法律问题"}”场景，只展示明确匹配的案例。`
+    : "尚未识别出明确法律场景；完成一次咨询或输入检索词后再为你匹配。";
+  banner.classList.toggle("has-context", fromConversation || context.source === "search");
 }
 
 async function updateCasePersonalization(enabled) {

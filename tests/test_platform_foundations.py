@@ -46,7 +46,7 @@ def test_recommendation_event_privacy_and_opt_out_clears_tracking():
         row = UserActivityEvent.query.filter_by(user_id=user["id"], event_type="dwell").one()
         assert "consultation_text" not in row.safe_metadata_json
         assert "device_id" not in row.safe_metadata_json
-    assert client.get("/api/cases/recommendations").get_json()["algorithm_version"] == "layered-v2"
+    assert client.get("/api/cases/recommendations").get_json()["algorithm_version"] == "latest-legal-concept-v4"
     client.put("/api/cases/personalization", json={"enabled": False})
     with app_module.app.app_context():
         assert UserActivityEvent.query.filter_by(user_id=user["id"]).count() == 0

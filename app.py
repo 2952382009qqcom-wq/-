@@ -46,6 +46,7 @@ from core.memory.routes import memory_bp
 from core.cases.seed import seed_reference_data
 from core.recommendations.events import record_event
 from core.taxonomy import infer_legal_domain
+from core.legal_guidance import legal_anchors_for_question, requires_legal_basis
 # Import model modules before db.create_all so every new table is registered.
 from core.community import models as _community_models  # noqa: F401
 from core.cases import models as _case_models  # noqa: F401
@@ -1716,6 +1717,8 @@ def _run_legal_agent_turn(data, upload=None):
         combined_text, max_chars, parsed, filename
     )
     context = conversation_context(conversation, limit=20, char_budget=8000)
+    verified_legal_anchors = legal_anchors_for_question(message)
+    legal_basis_required = requires_legal_basis(message)
     try:
         if intent == INTENT_REVIEW:
             if _is_current_demo_mode():
@@ -1759,6 +1762,8 @@ def _run_legal_agent_turn(data, upload=None):
                     conversation_summary=memory_context["summary"],
                     relevant_memories=memory_context["memories"],
                     attachment_evidence=attachment_text[:6000] if attachment_text else "无",
+                    verified_legal_anchors=verified_legal_anchors,
+                    legal_basis_required=legal_basis_required,
                 )
                 raw_result = _llm_or_demo(
                     _call_llm(SYSTEM_PROMPT, prompt), _demo_search, model_text
@@ -1770,7 +1775,12 @@ def _run_legal_agent_turn(data, upload=None):
         raw_result["llm_error"] = str(error)[:200]
         tool_result = raw_result
 
-    answer = compose_chat_answer(intent, tool_result)
+    answer = compose_chat_answer(
+        intent,
+        tool_result,
+        legal_basis_fallback=verified_legal_anchors,
+        required_legal_basis=legal_basis_required,
+    )
     result = {
         "conversation_id": conversation.id,
         "intent": intent,

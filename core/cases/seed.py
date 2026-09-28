@@ -4,11 +4,12 @@ from datetime import date, datetime
 from pathlib import Path
 
 from core.models import db
-from core.taxonomy import CASE_CATEGORIES, COMMUNITY_CATEGORIES
+from core.taxonomy import CASE_CATEGORIES, COMMUNITY_CATEGORIES, classify_case_content
 from core.community.models import CommunityCategory
 from core.search.indexing import enqueue_index, process_outbox
 
 from .models import CaseCategory, CaseLawReference, CaseTag, LegalCase, LegalCaseCategory, LegalCaseTag
+from .student_cases import RECENT_STUDENT_CASES
 
 
 VERIFIED_CASES = (
@@ -208,22 +209,63 @@ def _load_bundled_cases():
 
 BUNDLED_CASES = _load_bundled_cases()
 
+LEGACY_AGGREGATE_TAGS = {
+    "大学生高频", "社会热点", "日常生活", "校园权益", "实习就业",
+    "租房居住", "消费维权", "网络安全", "婚姻家庭", "金融借贷",
+    "交通出行", "生命健康", "知识产权", "环境生态", "行政法治",
+    "刑事风险", "民商事",
+}
+
+
+def _precise_definition(raw):
+    """Replace the old broad/contaminated taxonomy with one precise domain."""
+    definition = dict(raw)
+    clean_keyword_parts = [
+        value.strip() for value in str(definition.get("keywords", "")).split(",")
+        if value.strip() and value.strip() not in LEGACY_AGGREGATE_TAGS
+    ]
+    case_type = str(definition.get("case_type", ""))
+    fallback = "criminal" if "刑" in case_type else "public" if "行政" in case_type else "civil"
+    category_slug, legal_domain = classify_case_content(
+        title=definition.get("title", ""),
+        cause=definition.get("cause", ""),
+        keywords=clean_keyword_parts,
+        dispute_focus=definition.get("dispute_focus", ""),
+        case_type=case_type,
+        fallback=fallback,
+    )
+    definition["legal_domain"] = legal_domain
+    definition["categories"] = (category_slug,)
+    definition["tags"] = tuple(
+        tag for tag in definition.get("tags", ()) if tag not in LEGACY_AGGREGATE_TAGS
+    )
+    definition["keywords"] = ",".join(clean_keyword_parts)
+    return definition
+
 
 def seed_reference_data():
     for index, (slug, name, description, icon) in enumerate(COMMUNITY_CATEGORIES, 1):
         row = CommunityCategory.query.filter_by(slug=slug).first()
         if row is None:
             db.session.add(CommunityCategory(slug=slug, name=name, description=description, icon=icon, sort_order=index))
+    active_case_slugs = {item[0] for item in CASE_CATEGORIES}
+    CaseCategory.query.filter(~CaseCategory.slug.in_(active_case_slugs)).update(
+        {CaseCategory.is_active: False}, synchronize_session=False
+    )
     for index, (slug, name, description) in enumerate(CASE_CATEGORIES, 1):
         row = CaseCategory.query.filter_by(slug=slug).first()
         if row is None:
             db.session.add(CaseCategory(slug=slug, name=name, description=description, sort_order=index))
+        else:
+            row.name = name
+            row.description = description
+            row.sort_order = index
+            row.is_active = True
     db.session.flush()
 
-    for definition in VERIFIED_CASES + BUNDLED_CASES:
+    for raw_definition in VERIFIED_CASES + RECENT_STUDENT_CASES + BUNDLED_CASES:
+        definition = _precise_definition(raw_definition)
         row = LegalCase.query.filter_by(slug=definition["slug"]).first()
-        if row is not None:
-            continue
         public_fields = {key: value for key, value in definition.items() if key not in {"categories", "tags", "laws"}}
         digest_source = "|".join(str(public_fields.get(key, "")) for key in ("title", "case_number", "summary", "judgment_result", "source_url"))
         public_fields.setdefault("source_publisher", "中华人民共和国最高人民法院")
@@ -234,27 +276,57 @@ def seed_reference_data():
             "verification_status": "verified",
             "status": "published",
         })
-        row = LegalCase(**public_fields)
-        db.session.add(row)
-        db.session.flush()
-        enqueue_index("legal_case", row.id, {
-            "title": row.title, "summary": row.summary, "dispute_focus": row.dispute_focus,
-            "judgment_reasoning": row.judgment_reasoning, "keywords": row.keywords,
-            "case_number": row.case_number, "legal_domain": row.legal_domain,
-            "status": row.status, "verification_status": row.verification_status,
-        })
-        for category_slug in definition["categories"]:
-            category = CaseCategory.query.filter_by(slug=category_slug).one()
-            db.session.add(LegalCaseCategory(case_id=row.id, category_id=category.id))
-        for tag_name in definition["tags"]:
-            tag_slug = hashlib.sha1(tag_name.encode("utf-8")).hexdigest()[:20]
-            tag = CaseTag.query.filter_by(name=tag_name).first()
-            if tag is None:
-                tag = CaseTag(name=tag_name, slug=tag_slug)
-                db.session.add(tag)
-                db.session.flush()
-            db.session.add(LegalCaseTag(case_id=row.id, tag_id=tag.id))
-        for law_name, article, note in definition["laws"]:
-            db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
+        if row is None:
+            row = LegalCase(**public_fields)
+            db.session.add(row)
+            db.session.flush()
+            needs_index = True
+        else:
+            needs_index = row.legal_domain != public_fields["legal_domain"] or row.keywords != public_fields["keywords"]
+            row.legal_domain = public_fields["legal_domain"]
+            row.keywords = public_fields["keywords"]
+            row.verification_status = "verified"
+            row.status = "published"
+
+        desired_categories = set(definition["categories"])
+        existing_categories = {
+            item.slug for item in CaseCategory.query.join(
+                LegalCaseCategory, LegalCaseCategory.category_id == CaseCategory.id
+            ).filter(LegalCaseCategory.case_id == row.id).all()
+        }
+        if existing_categories != desired_categories:
+            LegalCaseCategory.query.filter_by(case_id=row.id).delete(synchronize_session=False)
+            for category_slug in definition["categories"]:
+                category = CaseCategory.query.filter_by(slug=category_slug).one()
+                db.session.add(LegalCaseCategory(case_id=row.id, category_id=category.id))
+            needs_index = True
+
+        desired_tags = set(definition["tags"])
+        existing_tags = {
+            item.name for item in CaseTag.query.join(
+                LegalCaseTag, LegalCaseTag.tag_id == CaseTag.id
+            ).filter(LegalCaseTag.case_id == row.id).all()
+        }
+        if existing_tags != desired_tags:
+            LegalCaseTag.query.filter_by(case_id=row.id).delete(synchronize_session=False)
+            for tag_name in definition["tags"]:
+                tag_slug = hashlib.sha1(tag_name.encode("utf-8")).hexdigest()[:20]
+                tag = CaseTag.query.filter_by(name=tag_name).first()
+                if tag is None:
+                    tag = CaseTag(name=tag_name, slug=tag_slug)
+                    db.session.add(tag)
+                    db.session.flush()
+                db.session.add(LegalCaseTag(case_id=row.id, tag_id=tag.id))
+
+        if not CaseLawReference.query.filter_by(case_id=row.id).first():
+            for law_name, article, note in definition["laws"]:
+                db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
+        if needs_index:
+            enqueue_index("legal_case", row.id, {
+                "title": row.title, "summary": row.summary, "dispute_focus": row.dispute_focus,
+                "judgment_reasoning": row.judgment_reasoning, "keywords": row.keywords,
+                "case_number": row.case_number, "legal_domain": row.legal_domain,
+                "status": row.status, "verification_status": row.verification_status,
+            })
     db.session.commit()
     process_outbox(limit=600)

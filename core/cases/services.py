@@ -1,10 +1,9 @@
-from sqlalchemy import or_
-
 from core.community.models import CommunityPost, CommunityPostCaseLink
 from core.community.serializers import serialize_post
 from core.models import db
 
 from .models import CaseRelation, LegalCase
+from .matching import find_context_cases
 
 
 def related_cases(case, limit=4):
@@ -21,12 +20,10 @@ def related_cases(case, limit=4):
     if len(explicit) >= limit:
         return explicit
     excluded = [case.id] + [item.id for item in explicit]
-    fallback = LegalCase.query.filter(
-        LegalCase.id.notin_(excluded),
-        LegalCase.status == "published",
-        LegalCase.verification_status == "verified",
-        or_(LegalCase.legal_domain == case.legal_domain, LegalCase.cause == case.cause),
-    ).order_by(LegalCase.favorite_count.desc(), LegalCase.view_count.desc()).limit(limit - len(explicit)).all()
+    fallback = find_context_cases(
+        f"{case.title}\n{case.cause}\n{case.dispute_focus}", case.legal_domain,
+        limit=limit - len(explicit), exclude_ids=excluded,
+    )
     return explicit + fallback
 
 
@@ -43,6 +40,7 @@ def related_discussions(case, user_id=None, limit=6):
         if linked:
             query = query.filter(CommunityPost.id.notin_([post.id for post in linked]))
         if keywords:
+            from sqlalchemy import or_
             clauses = []
             for keyword in keywords:
                 term = f"%{keyword}%"

@@ -1,4 +1,5 @@
 from .models import CaseFavorite, CaseLawReference, CaseTag, LegalCaseCategory, LegalCaseTag
+from .matching import case_year
 
 
 def _case_categories(case_id):
@@ -37,6 +38,7 @@ def serialize_case_card(case, user_id=None, *, recommendation=None):
         "case_type": case.case_type,
         "legal_domain": case.legal_domain,
         "decision_date": case.decision_date.isoformat() if case.decision_date else "",
+        "reference_year": case_year(case),
         "summary": case.summary[:240] + ("…" if len(case.summary) > 240 else ""),
         "keywords": [item.strip() for item in case.keywords.split(",") if item.strip()],
         "categories": categories,

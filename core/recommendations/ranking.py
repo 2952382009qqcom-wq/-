@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta
 
 from core.cases.models import CaseFavorite, LegalCase
+from core.cases.matching import case_year, concept_relevance, legal_concepts
 from core.models import db
 
 from .collaborative import load_scores
@@ -24,9 +25,10 @@ def _tokens(value):
 
 
 def _freshness(item):
-    if not item.decision_date:
+    year = case_year(item)
+    if not year:
         return 0.2
-    return math.exp(-max(0, (date.today() - item.decision_date).days) / 3650)
+    return math.exp(-max(0, date.today().year - year) / 5)
 
 
 def _source_trust(item):
@@ -35,8 +37,10 @@ def _source_trust(item):
 
 def _reasons(features, layers, model_version):
     reasons = []
+    if features.get("context_match"):
+        reasons.append("与当前咨询主题直接相关")
     if features["domain"] >= 0.15:
-        reasons.append("与你近期关注的法律领域相关")
+        reasons.append("属于你正在关注的法律领域")
     if features["favorite"]:
         reasons.append("与你收藏过的案例同领域")
     if features["text"] >= 0.12 or "keyword" in layers:
@@ -80,6 +84,7 @@ def recommend_cases(user_id, limit=8, context_text="", domain=""):
 
     collaborative, model_version = load_scores(user_id) if user_id else ({}, None)
     context_tokens = _tokens(context_text)
+    required_concepts = legal_concepts(context_text)
     max_views = max([entry["case"].view_count for entry in recalled] + [1])
     ranked = []
     for entry in recalled:
@@ -89,10 +94,24 @@ def recommend_cases(user_id, limit=8, context_text="", domain=""):
             domain_score = max(domain_score, 1.0)
         item_tokens = _tokens(" ".join((item.title, item.summary, item.dispute_focus, item.keywords)))
         text_score = len(context_tokens & item_tokens) / max(1, min(len(context_tokens), 12))
+        concept_score = concept_relevance(item, context_text)
+        same_domain = bool(domain and domain != "other" and item.legal_domain == domain)
+        if required_concepts:
+            context_match = bool(context_text) and concept_score > 0 and (same_domain or not domain or domain == "other")
+        else:
+            context_match = bool(context_text) and (
+                same_domain and text_score >= 0.06 if domain and domain != "other" else text_score >= 0.12
+            )
+        if context_text and not context_match:
+            continue
+        year = case_year(item)
+        if context_text and year and year < date.today().year - 8 and text_score < 0.16 and concept_score == 0:
+            continue
         popularity = min(1.0, math.log1p(item.view_count + 2 * item.favorite_count) / math.log1p(max_views + 10))
         features = {
             "domain": domain_score,
             "text": text_score,
+            "concept": concept_score,
             "favorite": 1.0 if item.legal_domain in favorite_domains else 0.0,
             "recency": 1.0 if "recent_activity" in entry["layers"] else 0.0,
             "popularity": popularity,
@@ -102,8 +121,9 @@ def recommend_cases(user_id, limit=8, context_text="", domain=""):
             "collaborative": max(0.0, min(1.0, collaborative.get(item.id, 0.0))),
             "repeat_exposure": min(1.0, impression_counts[item.id] / 3),
             "negative_feedback": 1.0 if item.id in negative_ids else 0.0,
+            "context_match": 1.0 if context_match else 0.0,
         }
-        score = sum(RANKING_WEIGHTS[name] * value for name, value in features.items())
+        score = sum(RANKING_WEIGHTS[name] * features[name] for name in RANKING_WEIGHTS)
         ranked.append((score, item, _reasons(features, entry["layers"], model_version)))
 
     # Greedy domain diversification prevents a single legal domain taking over.

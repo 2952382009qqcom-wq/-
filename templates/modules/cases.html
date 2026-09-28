@@ -1,26 +1,32 @@
 <section id="module-cases" class="module hidden cases-module">
   <div class="cases-hero">
     <div>
-      <span class="workspace-eyebrow">VERIFIED CASE LIBRARY</span>
-      <h2 class="module-title">法律案例</h2>
-      <p class="module-sub">来自权威公开来源的真实案例，用结构化裁判逻辑理解法律如何落地。</p>
+      <span class="workspace-eyebrow">CONTEXTUAL CASE GUIDE</span>
+      <h2 class="module-title">案例导航</h2>
+      <p class="module-sub">先理解你刚才咨询的法律场景，再从权威公开来源中寻找真正相关、时间较近的案例。</p>
     </div>
-    <div class="verified-seal"><b>500</b><span>官方公开案例</span></div>
+    <div class="verified-seal"><b>严选</b><span>相关优先 · 近期优先</span></div>
   </div>
   <div class="community-search-row">
     <label class="community-search"><span>⌕</span><input id="cases-query" type="search" placeholder="搜索案由、争议焦点、关键词或案号" onkeydown="if(event.key==='Enter')loadCases()"></label>
     <button type="button" class="btn-secondary compact" onclick="loadCases()">检索案例</button>
   </div>
+  <div id="case-context-banner" class="case-context-banner">
+    <span class="case-context-mark">当前咨询</span>
+    <div><b id="case-context-title">正在读取最近一次法律咨询</b><p id="case-context-copy">只在主题明确匹配时推荐，不用热门案例凑数。</p></div>
+    <button type="button" onclick="loadCaseRecommendations()">刷新关联</button>
+  </div>
   <div id="cases-categories" class="community-chips"></div>
+  <p id="student-case-note" class="student-case-note hidden">这里只收录案情中明确出现学生、高校或校园身份的案例，不再把一般生活案件泛化成“学生常见”。</p>
   <div class="community-toolbar">
     <div id="cases-feeds" class="community-feed-tabs"><button type="button" class="active" data-feed="latest">最新收录</button><button type="button" data-feed="popular">热门</button><button type="button" data-feed="favorites">我的收藏</button></div>
-    <label class="personalization-switch"><input id="cases-personalization" type="checkbox" checked onchange="updateCasePersonalization(this.checked)"><span></span>个性化推荐</label>
+    <label class="personalization-switch"><input id="cases-personalization" type="checkbox" checked onchange="updateCasePersonalization(this.checked)"><span></span>结合咨询记录</label>
   </div>
   <section id="case-recommendation-section" class="case-recommendation-section">
-    <div class="section-line-title"><div><span>FOR YOU</span><h3>为你推荐</h3></div><small>根据浏览、搜索、收藏与咨询领域动态调整</small></div>
+    <div class="section-line-title"><div><span>CONTEXT MATCH</span><h3>和当前咨询最相关</h3></div><small>近八年案例优先；老案例仅在明确命中时保留</small></div>
     <div id="case-recommendations" class="case-recommendation-strip"></div>
   </section>
-  <div class="section-line-title"><div><span>CASE INDEX</span><h3>案例索引</h3></div><small id="cases-total"></small></div>
+  <div class="section-line-title"><div><span>CASE INDEX</span><h3>按法律场景浏览</h3></div><small id="cases-total"></small></div>
   <div id="cases-list" class="cases-grid"><div class="module-loading">正在载入权威案例…</div></div>
   <div class="cases-load-more"><button id="cases-load-more" type="button" class="btn-secondary hidden" onclick="loadMoreCases()">加载更多案例</button></div>
 </section>

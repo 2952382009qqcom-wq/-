@@ -2,6 +2,15 @@
 .verified-seal{z-index:1;display:flex;flex-direction:column;align-items:center;min-width:105px;padding:13px 18px;border:1px solid rgba(231,211,171,.55);color:#ead7ae}
 .verified-seal b{font-family:"Noto Serif SC",serif;font-size:25px}
 .verified-seal span{font-size:10px;letter-spacing:.12em}
+.student-case-note{margin:-5px 0 18px;color:var(--text-muted);font-size:12px;line-height:1.7}
+.student-case-chip{border-color:#9f7d54!important;color:#715536!important}
+.student-case-chip.active{background:#715536!important;color:#fff!important}
+.case-context-banner{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:14px;margin:16px 0;padding:15px 17px;border:1px solid #ddd5c8;border-left:4px solid #aaa399;background:#fff;color:#667069}
+.case-context-banner.has-context{border-left-color:#47715c;background:#f7faf8}
+.case-context-mark{padding:5px 8px;border-radius:2px;background:#ede8df;color:#79694f;font-size:11px;white-space:nowrap}
+.case-context-banner b{display:block;color:#30483b;line-height:1.45}
+.case-context-banner p{margin:3px 0 0;color:#858a84;font-size:12px}
+.case-context-banner button{border:1px solid #cfc6b8;background:#fff;padding:8px 11px;color:#56665d;cursor:pointer;white-space:nowrap}
 .personalization-switch{display:flex;align-items:center;gap:7px;padding-bottom:10px;color:#727972;font-size:12px;cursor:pointer}
 .personalization-switch input{position:absolute;opacity:0}
 .personalization-switch span{position:relative;width:34px;height:18px;border-radius:10px;background:#bbb}
@@ -15,6 +24,7 @@
 .section-line-title small{color:#8c8e8a}
 .case-recommendation-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
 .case-recommendation-card{display:flex;flex-direction:column;min-height:144px;padding:16px;border:1px solid #d9d0bf;background:#fff;text-align:left;cursor:pointer}
+.case-recommendation-card>span{margin-bottom:7px;color:#77857c;font-size:10px;letter-spacing:.04em}
 .case-recommendation-card b{color:#34473d;line-height:1.55}
 .case-recommendation-card p{margin:8px 0;color:#777c76;font-size:12px;line-height:1.5}
 .case-recommendation-card small{margin-top:auto;color:#9a7744}
@@ -70,4 +80,4 @@
 .crosslink-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:24px}
 .crosslink-list{display:flex;flex-direction:column;gap:8px}
 .crosslink-list button{padding:12px;border:1px solid #ded7cb;background:#fff;text-align:left;color:#45564d;cursor:pointer}
-@media(max-width:760px){.case-recommendation-strip,.cases-grid,.case-structure,.crosslink-grid{grid-template-columns:1fr}.case-recommendation-strip{display:flex;overflow:auto}.case-recommendation-card{min-width:245px}.case-section.full{grid-column:auto}.case-detail-content{padding:20px}.case-card-media{height:92px}}
+@media(max-width:760px){.case-context-banner{grid-template-columns:auto minmax(0,1fr)}.case-context-banner button{grid-column:1/-1;width:100%}.case-recommendation-strip,.cases-grid,.case-structure,.crosslink-grid{grid-template-columns:1fr}.case-recommendation-strip{display:flex;overflow:auto}.case-recommendation-card{min-width:245px}.case-section.full{grid-column:auto}.case-detail-content{padding:20px}.case-card-media{height:92px}}
