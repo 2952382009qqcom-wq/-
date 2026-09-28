@@ -1,5 +1,7 @@
 import hashlib
+import json
 from datetime import date, datetime
+from pathlib import Path
 
 from core.models import db
 from core.taxonomy import CASE_CATEGORIES, COMMUNITY_CATEGORIES
@@ -29,7 +31,7 @@ VERIFIED_CASES = (
         "keywords": "高校处分,学籍,毕业证,学位,正当程序,受教育权",
         "source_external_id": "court-13222",
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13222.html",
-        "categories": ("campus-rights",),
+        "categories": ("student-daily", "campus-rights"),
         "tags": ("学籍", "高校处分", "毕业证", "正当程序"),
         "laws": (("中华人民共和国教育法", "", "高校颁发学业证书的职责"),),
     },
@@ -52,7 +54,7 @@ VERIFIED_CASES = (
         "keywords": "学位,学术自治,高校,行政诉讼,学位标准",
         "source_external_id": "court-13223",
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13223.html",
-        "categories": ("campus-rights",),
+        "categories": ("student-daily", "campus-rights"),
         "tags": ("学位", "学术自治", "行政诉讼"),
         "laws": (("中华人民共和国学位条例", "第四条、第八条", "学士学位授予条件"),),
     },
@@ -75,7 +77,7 @@ VERIFIED_CASES = (
         "keywords": "劳动合同,违法解除,解除通知,举证责任,赔偿金",
         "source_external_id": "court-364641",
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/364641.html",
-        "categories": ("labor",),
+        "categories": ("student-daily", "daily-life", "labor"),
         "tags": ("违法解除", "解除通知", "赔偿金"),
         "laws": (("中华人民共和国劳动合同法", "第三十九条", "用人单位单方解除条件"),),
     },
@@ -98,7 +100,7 @@ VERIFIED_CASES = (
         "keywords": "招聘,就业歧视,地域歧视,平等就业权,求职",
         "source_external_id": "court-364691",
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/364691.html",
-        "categories": ("labor",),
+        "categories": ("student-daily", "daily-life", "labor"),
         "tags": ("招聘", "就业歧视", "人格权"),
         "laws": (("中华人民共和国就业促进法", "第三条、第二十六条", "平等就业与禁止就业歧视"),),
     },
@@ -121,7 +123,7 @@ VERIFIED_CASES = (
         "keywords": "食品安全,过期食品,消费者,惩罚性赔偿,购物凭证",
         "source_external_id": "court-13326",
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/13326.html",
-        "categories": ("consumer",),
+        "categories": ("student-daily", "daily-life", "consumer"),
         "tags": ("食品安全", "消费赔偿", "过期食品"),
         "laws": (("中华人民共和国食品安全法", "", "不符合食品安全标准食品的赔偿责任，具体条号应按现行法核验"),),
     },
@@ -144,7 +146,7 @@ VERIFIED_CASES = (
         "keywords": "房屋租赁,危房,合同无效,保证金,押金,公共安全",
         "source_external_id": "court-331211",
         "source_url": "https://www.court.gov.cn/fabu/xiangqing/331211.html",
-        "categories": ("housing",),
+        "categories": ("student-daily", "daily-life", "housing"),
         "tags": ("租赁安全", "押金", "合同无效"),
         "laws": (("中华人民共和国民法典", "第一百五十三条、第一百五十七条", "违背公序良俗及民事法律行为无效后的处理"),),
     },
@@ -167,11 +169,44 @@ VERIFIED_CASES = (
         "keywords": "验证码,手机号,个人信息,网络账号,拉新,信息安全",
         "source_external_id": "court-384441",
         "source_url": "https://www.court.gov.cn/shenpan/xiangqing/384441.html",
-        "categories": ("cyber",),
+        "categories": ("student-daily", "social-hotspots", "daily-life", "cyber"),
         "tags": ("验证码", "个人信息", "账号安全"),
         "laws": (("中华人民共和国刑法", "第二百五十三条之一", "侵犯公民个人信息罪"),),
     },
 )
+
+
+CASE_LIBRARY_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_500.json"
+
+
+def _load_bundled_cases():
+    """Load the generated, reviewable case data without any runtime crawling."""
+    payload = json.loads(CASE_LIBRARY_PATH.read_text(encoding="utf-8"))
+    rows = payload.get("cases", [])
+    if payload.get("schema_version") != 1 or len(rows) != 493:
+        raise RuntimeError("bundled legal case library is missing or has an unexpected schema")
+    normalized = []
+    for raw in rows:
+        item = dict(raw)
+        if item.get("decision_date"):
+            item["decision_date"] = date.fromisoformat(item["decision_date"])
+        else:
+            item["decision_date"] = None
+        if item.get("published_at"):
+            item["published_at"] = datetime.fromisoformat(item["published_at"])
+        else:
+            item["published_at"] = None
+        item["categories"] = tuple(item.get("categories") or ())
+        item["tags"] = tuple(item.get("tags") or ())
+        item["laws"] = tuple(
+            (law["law_name"], law.get("article", ""), law.get("note", ""))
+            for law in item.get("laws") or ()
+        )
+        normalized.append(item)
+    return tuple(normalized)
+
+
+BUNDLED_CASES = _load_bundled_cases()
 
 
 def seed_reference_data():
@@ -185,17 +220,17 @@ def seed_reference_data():
             db.session.add(CaseCategory(slug=slug, name=name, description=description, sort_order=index))
     db.session.flush()
 
-    for definition in VERIFIED_CASES:
+    for definition in VERIFIED_CASES + BUNDLED_CASES:
         row = LegalCase.query.filter_by(slug=definition["slug"]).first()
         if row is not None:
             continue
         public_fields = {key: value for key, value in definition.items() if key not in {"categories", "tags", "laws"}}
         digest_source = "|".join(str(public_fields.get(key, "")) for key in ("title", "case_number", "summary", "judgment_result", "source_url"))
+        public_fields.setdefault("source_publisher", "中华人民共和国最高人民法院")
+        public_fields.setdefault("source_type", "official_court")
+        public_fields.setdefault("source_hash", hashlib.sha256(digest_source.encode("utf-8")).hexdigest())
         public_fields.update({
-            "source_publisher": "中华人民共和国最高人民法院",
-            "source_type": "official_court",
-            "source_hash": hashlib.sha256(digest_source.encode("utf-8")).hexdigest(),
-            "source_checked_at": datetime.utcnow(),
+            "source_checked_at": None,
             "verification_status": "verified",
             "status": "published",
         })
@@ -222,4 +257,4 @@ def seed_reference_data():
         for law_name, article, note in definition["laws"]:
             db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
     db.session.commit()
-    process_outbox(limit=50)
+    process_outbox(limit=600)

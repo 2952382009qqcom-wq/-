@@ -22,6 +22,7 @@ instance/
 # Keep only runtime rule data in data/
 data/*
 !data/contract_risks.json
+!data/legal_cases_500.json
 
 # Logs and local test output
 *.log

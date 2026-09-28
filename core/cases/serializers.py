@@ -25,6 +25,7 @@ def _case_tags(case_id):
 
 def serialize_case_card(case, user_id=None, *, recommendation=None):
     favorited = bool(user_id and CaseFavorite.query.filter_by(user_id=user_id, case_id=case.id).first())
+    categories = _case_categories(case.id)
     payload = {
         "id": case.id,
         "slug": case.slug,
@@ -38,7 +39,12 @@ def serialize_case_card(case, user_id=None, *, recommendation=None):
         "decision_date": case.decision_date.isoformat() if case.decision_date else "",
         "summary": case.summary[:240] + ("…" if len(case.summary) > 240 else ""),
         "keywords": [item.strip() for item in case.keywords.split(",") if item.strip()],
-        "categories": _case_categories(case.id),
+        "categories": categories,
+        "media": {
+            "image_url": case.image_url,
+            "image_alt": case.image_alt,
+            "image_source_url": case.image_source_url,
+        },
         "verification_status": case.verification_status,
         "view_count": case.view_count,
         "favorite_count": case.favorite_count,
