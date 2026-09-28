@@ -24,6 +24,7 @@ data/*
 !data/contract_risks.json
 !data/legal_cases_500.json
 !data/legal_cases_student_200.json
+!data/legal_cases_student_100.json
 
 # Logs and local test output
 *.log

@@ -179,6 +179,7 @@ VERIFIED_CASES = (
 
 CASE_LIBRARY_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_500.json"
 STUDENT_CASES_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_student_200.json"
+STUDENT_CASES_EXTRA_PATH = Path(__file__).resolve().parents[2] / "data" / "legal_cases_student_100.json"
 
 
 def _load_case_file(path, expected_count):
@@ -213,6 +214,7 @@ def _load_case_file(path, expected_count):
 
 BUNDLED_CASES = _load_case_file(CASE_LIBRARY_PATH, 493)
 STUDENT_CASES = _load_case_file(STUDENT_CASES_PATH, 200)
+STUDENT_CASES_EXTRA = _load_case_file(STUDENT_CASES_EXTRA_PATH, 100)
 REFRESHED_CASE_SLUGS = {item["slug"] for item in VERIFIED_CASES + RECENT_CASES}
 
 
@@ -227,7 +229,7 @@ def seed_reference_data():
             db.session.add(CaseCategory(slug=slug, name=name, description=description, sort_order=index))
     db.session.flush()
 
-    for definition in VERIFIED_CASES + BUNDLED_CASES + RECENT_CASES + STUDENT_CASES:
+    for definition in VERIFIED_CASES + BUNDLED_CASES + RECENT_CASES + STUDENT_CASES + STUDENT_CASES_EXTRA:
         row = LegalCase.query.filter_by(slug=definition["slug"]).first()
         if row is not None:
             if definition["slug"] in REFRESHED_CASE_SLUGS:
@@ -271,4 +273,4 @@ def seed_reference_data():
         for law_name, article, note in definition["laws"]:
             db.session.add(CaseLawReference(case_id=row.id, law_name=law_name, article=article, note=note))
     db.session.commit()
-    process_outbox(limit=900)
+    process_outbox(limit=1000)

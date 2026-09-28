@@ -10,7 +10,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "legal_cases_student_200.json"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_FILES = (("legal_cases_student_200.json", 200), ("legal_cases_student_100.json", 100))
 REQUIRED = (
     "slug", "title", "summary", "dispute_focus", "judgment_result",
     "judgment_reasoning", "ai_plain_language", "source_external_id",
@@ -19,11 +20,14 @@ REQUIRED = (
 
 
 def validate() -> dict:
-    payload = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-    cases = payload.get("cases") or []
     errors: list[str] = []
-    if payload.get("schema_version") != 1 or payload.get("case_count") != 200 or len(cases) != 200:
-        errors.append("expected schema 1 and exactly 200 cases")
+    cases: list[dict] = []
+    for filename, expected in DATA_FILES:
+        payload = json.loads((DATA_DIR / filename).read_text(encoding="utf-8"))
+        batch = payload.get("cases") or []
+        if payload.get("schema_version") != 1 or payload.get("case_count") != expected or len(batch) != expected:
+            errors.append(f"{filename}: expected schema 1 and exactly {expected} cases")
+        cases.extend(batch)
 
     for index, case in enumerate(cases, 1):
         label = case.get("slug") or f"row-{index}"
@@ -53,6 +57,8 @@ def validate() -> dict:
                 errors.append(f"{label}: incomplete {field}")
         if not case.get("categories") or not case.get("tags"):
             errors.append(f"{label}: missing categorization")
+        if len(case.get("categories") or []) != len(set(case.get("categories") or [])):
+            errors.append(f"{label}: duplicate category")
         laws = case.get("laws") or []
         if not laws:
             errors.append(f"{label}: missing law")
@@ -68,14 +74,14 @@ def validate() -> dict:
         if case.get("image_url") and not case.get("image_source_url"):
             errors.append(f"{label}: image lacks official provenance")
 
-    for field in ("slug", "source_external_id"):
+    for field in ("slug", "source_external_id", "title"):
         duplicates = [value for value, count in Counter(case.get(field) for case in cases).items() if count > 1]
         if duplicates:
             errors.append(f"duplicate {field}: {duplicates[:3]}")
 
     domains = Counter(case.get("legal_domain") for case in cases)
     pages = len({case.get("source_url") for case in cases})
-    if len(domains) < 8 or pages < 30:
+    if len(domains) < 8 or pages < 45:
         errors.append(f"coverage too narrow: {len(domains)} domains, {pages} official pages")
     if errors:
         raise SystemExit("student case validation failed:\n- " + "\n- ".join(errors[:40]))
