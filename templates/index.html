@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css?v=20260928download3">
+<link rel="stylesheet" href="/static/css/style.css?v=20260930multiphoto1">
 <link rel="stylesheet" href="/static/css/community.css?v=20260928mobile3">
 <link rel="stylesheet" href="/static/css/cases.css?v=20260928context4">
 <link rel="stylesheet" href="/static/css/chat.css?v=20260927platform2">
@@ -194,10 +194,10 @@
           </div>
 
           <div class="agent-composer-wrap">
-            <div id="agent-attachment" class="agent-attachment hidden">
-              <div id="agent-attachment-thumb" class="agent-attachment-thumb">DOC</div>
-              <div><strong id="agent-attachment-name"></strong><span id="agent-attachment-meta">等待发送</span></div>
-              <button type="button" onclick="clearAgentAttachment()" aria-label="移除附件">×</button>
+            <div id="agent-attachment" class="agent-attachment multi-upload hidden">
+              <div class="upload-selection-heading"><strong id="agent-attachment-name" aria-live="polite"></strong><button type="button" onclick="clearAgentAttachment()">清空</button></div>
+              <div id="agent-attachment-list" class="upload-file-list"></div>
+              <small>可继续拍照或多选图片，按列表顺序合并分析。最多 10 个附件，总大小 15 MB。</small>
             </div>
             <div class="agent-quick-actions" aria-label="快捷任务">
               <button type="button" data-agent-action="search" onclick="setAgentAction('search', this)">法规检索</button>
@@ -213,7 +213,7 @@
                 <button type="button" class="agent-icon-button" onclick="document.getElementById('agent-camera').click()" title="拍照分析" aria-label="拍照分析">◎</button>
                 <button id="agent-send" type="button" class="agent-send" onclick="submitLegalAgent()" aria-label="发送">↑</button>
               </div>
-              <input type="file" id="agent-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*" class="hidden" onchange="onAgentFileSelected(this)">
+              <input type="file" id="agent-file" multiple accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*" class="hidden" onchange="onAgentFileSelected(this)">
               <input type="file" id="agent-camera" accept="image/*" capture="environment" class="hidden" onchange="onAgentFileSelected(this, true)">
             </div>
             <p class="agent-composer-note">重要决定前请结合完整材料核实；涉及诉讼、重大金额或人身安全时建议及时咨询专业律师。</p>
@@ -264,9 +264,9 @@
         <div id="analyze-upload" class="tab-pane hidden">
           <div class="drop-zone" id="analyze-drop-zone">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>点击上传或拖拽文件</span>
+            <span>多选图片或文件，也可拖拽添加</span>
             <em>TXT / PDF / DOCX / JPG / PNG / WebP</em>
-            <input type="file" id="analyze-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('analyze-file', 'analyze-file-name')">
+            <input type="file" id="analyze-file" multiple accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('analyze-file', 'analyze-file-name')">
           </div>
           <div class="upload-action-row">
             <button type="button" class="upload-action-btn" onclick="document.getElementById('analyze-file').click()">
@@ -280,8 +280,8 @@
             <input type="file" id="analyze-camera" accept="image/*" capture="environment" class="camera-input" onchange="onCameraSelected('analyze')">
           </div>
           <span id="analyze-file-name" class="file-badge hidden"></span>
-          <div id="analyze-capture-preview" class="capture-preview hidden"><img alt="待识别图片预览"><span></span></div>
-          <p class="processing-hint">手机拍照与扫描 PDF 会先 OCR；身份证、手机号等信息在发送给模型前自动脱敏。</p>
+          <div id="analyze-capture-preview" class="capture-preview upload-file-list hidden"></div>
+          <p class="processing-hint">可连续拍照追加，最多 10 个附件、合计 15 MB；按列表顺序识别并合并分析，可删除或调整顺序。</p>
         </div>
         <button class="btn-primary" onclick="submitAnalyze()">
           <span>开始分析</span>
@@ -337,9 +337,9 @@
         <div id="review-upload" class="tab-pane hidden">
           <div class="drop-zone" id="review-drop-zone">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>点击上传或拖拽合同文件</span>
+            <span>多选合同照片或文件，也可拖拽添加</span>
             <em>TXT / PDF / DOCX / JPG / PNG / WebP</em>
-            <input type="file" id="review-file" accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('review-file', 'review-file-name')">
+            <input type="file" id="review-file" multiple accept=".txt,.md,.pdf,.docx,.jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" style="display:none" onchange="onFileSelected('review-file', 'review-file-name')">
           </div>
           <div class="upload-action-row">
             <button type="button" class="upload-action-btn" onclick="document.getElementById('review-file').click()">
@@ -353,8 +353,8 @@
             <input type="file" id="review-camera" accept="image/*" capture="environment" class="camera-input" onchange="onCameraSelected('review')">
           </div>
           <span id="review-file-name" class="file-badge hidden"></span>
-          <div id="review-capture-preview" class="capture-preview hidden"><img alt="待识别图片预览"><span></span></div>
-          <p class="processing-hint">支持手机拍照合同；系统会尝试脱敏常见身份证号、手机号等，重要材料请先预览并人工核对。</p>
+          <div id="review-capture-preview" class="capture-preview upload-file-list hidden"></div>
+          <p class="processing-hint">多页合同可连续拍照追加，最多 10 个附件、合计 15 MB；调整页序后一次审查，个人信息会在入模前脱敏。</p>
         </div>
         <button class="btn-primary" onclick="submitReview()">
           <span>开始审查</span>
@@ -1141,7 +1141,7 @@
   </div>
 </div>
 
-<script src="/static/js/main.js?v=20260928download3"></script>
+<script src="/static/js/main.js?v=20260930multiphoto1"></script>
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js" crossorigin="anonymous"></script>
 <script src="/static/js/community.js?v=20260927platform2"></script>
 <script src="/static/js/cases.js?v=20260928context4"></script>

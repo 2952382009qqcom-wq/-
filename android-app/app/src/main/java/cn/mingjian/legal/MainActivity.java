@@ -406,6 +406,8 @@ public final class MainActivity extends ComponentActivity {
 
             Intent contentIntent = params.createIntent();
             contentIntent.addCategory(Intent.CATEGORY_OPENABLE);
+            contentIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                    params.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
             Intent chooser = Intent.createChooser(contentIntent, "选择文件或拍照");
             if (cameraIntent != null && acceptsImages(params.getAcceptTypes())) {
                 chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{cameraIntent});

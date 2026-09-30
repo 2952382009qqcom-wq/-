@@ -661,7 +661,7 @@ function updateWorkspaceQuota() {
 const legalAgentState = {
   conversationId: null,
   messages: [],
-  file: null,
+  files: [],
   action: "",
   sending: false,
   lastResult: null,
@@ -735,30 +735,22 @@ async function saveBlobDownload(blob, filename) {
 }
 
 function onAgentFileSelected(input, fromCamera = false) {
-  const file = input && input.files && input.files[0];
-  if (!file) return;
-  if (file.size > 15 * 1024 * 1024) {
-    alert("附件不能超过 15 MB");
-    input.value = "";
-    return;
-  }
-  legalAgentState.file = file;
-  const box = document.getElementById("agent-attachment");
-  document.getElementById("agent-attachment-name").textContent = file.name || "现场照片";
-  document.getElementById("agent-attachment-meta").textContent = `${fromCamera ? "拍照" : "附件"} · ${formatFileSize(file.size)} · 将自动识别并脱敏`;
-  const suffix = (file.name || "IMG").split(".").pop().slice(0, 4).toUpperCase();
-  document.getElementById("agent-attachment-thumb").textContent = suffix || "FILE";
-  box.classList.remove("hidden");
+  if (!input?.files?.length) return;
+  if (legalAgentState.sending) { input.value = ""; return; }
+  legalAgentState.files = mergeUploadFiles(legalAgentState.files, input.files);
+  input.value = "";
+  renderUploadSelection("agent");
   document.getElementById("agent-input")?.focus();
 }
 
 function clearAgentAttachment() {
-  legalAgentState.file = null;
+  if (legalAgentState.sending) return;
+  legalAgentState.files = [];
   ["agent-file", "agent-camera"].forEach(id => {
     const input = document.getElementById(id);
     if (input) input.value = "";
   });
-  document.getElementById("agent-attachment")?.classList.add("hidden");
+  renderUploadSelection("agent");
 }
 
 function formatAgentText(text) {
@@ -790,8 +782,9 @@ function appendAgentMessage(role, content, options = {}) {
   if (!list) return null;
   const article = document.createElement("article");
   article.className = `agent-message ${role}`;
+  const attachmentNames = options.attachment?.files?.map(item => item.name || item.filename).join("、");
   const attachment = options.attachment
-    ? `<div class="agent-attachment-inline">附件：${escapeHtml(options.attachment.name || options.attachment.filename || "材料")}</div>`
+    ? `<div class="agent-attachment-inline">附件：${escapeHtml(attachmentNames || options.attachment.name || options.attachment.filename || "材料")}</div>`
     : "";
   article.innerHTML = `<div class="agent-message-avatar">${role === "user" ? "我" : "明"}</div>
     <div class="agent-message-body">
@@ -871,11 +864,11 @@ async function submitLegalAgent() {
   if (legalAgentState.sending) return;
   const input = document.getElementById("agent-input");
   let message = (input?.value || "").trim();
-  if (!message && !legalAgentState.file) return;
-  if (!message) message = "请分析这份附件，并告诉我关键问题和下一步建议。";
+  if (!message && !legalAgentState.files.length) return;
+  if (!message) message = "请按附件顺序分析这些材料，并告诉我关键问题和下一步建议。";
 
-  const file = legalAgentState.file;
-  appendAgentMessage("user", message, { attachment: file ? { name: file.name } : null });
+  const files = legalAgentState.files;
+  appendAgentMessage("user", message, { attachment: files.length ? { files: files.map(file => ({ name: file.name })) } : null });
   legalAgentState.messages.push({ role: "user", content: message });
   if (input) { input.value = ""; resizeAgentComposer(input); }
 
@@ -889,7 +882,7 @@ async function submitLegalAgent() {
   if (legalAgentState.conversationId) form.append("conversation_id", legalAgentState.conversationId);
   if (legalAgentState.action) form.append("action", legalAgentState.action);
   form.append("client_messages", JSON.stringify(legalAgentState.messages.slice(-16)));
-  if (file) form.append("file", file, file.name);
+  files.forEach(file => form.append("file", file, file.name));
 
   try {
     const response = await fetch("/api/legal-agent-stream", { method: "POST", body: form });
@@ -934,7 +927,10 @@ async function submitLegalAgent() {
     if (finalResult.conversation_id) legalAgentState.conversationId = finalResult.conversation_id;
     legalAgentState.lastResult = finalResult;
     legalAgentState.messages.push({ role: "assistant", content: finalResult.answer || "", result: finalResult });
-    clearAgentAttachment();
+    if (!finalResult.error) {
+      legalAgentState.files = [];
+      renderUploadSelection("agent");
+    }
     setAgentAction("");
     updateQuotaHint();
     loadAgentConversations();
@@ -1069,39 +1065,81 @@ function switchTab(module, tab) {
 const selectedUploadFiles = new Map();
 const uploadPreviewUrls = new Map();
 
-function updateUploadSelection(module, file, source = "file") {
-  if (!file) return;
-  selectedUploadFiles.set(module, file);
+const MAX_UPLOAD_FILES = 10;
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
-  const badge = document.getElementById(`${module}-file-name`);
-  if (badge) {
-    badge.textContent = `${source === "camera" ? "已拍摄" : "已选择"}：${file.name || "现场照片"}`;
-    badge.classList.remove("hidden");
+function mergeUploadFiles(existing, incoming) {
+  const next = [...existing];
+  for (const file of Array.from(incoming || [])) {
+    if (!/\.(txt|md|pdf|docx|jpg|jpeg|png|webp)$/i.test(file.name || "")) {
+      alert("支持 JPG、PNG、WebP、PDF、Word 和文本文件，请转换不支持的图片格式后上传。");
+      return existing;
+    }
+    if (!next.some(item => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) next.push(file);
   }
-
-  const preview = document.getElementById(`${module}-capture-preview`);
-  if (!preview) return;
-  const previousUrl = uploadPreviewUrls.get(module);
-  if (previousUrl) URL.revokeObjectURL(previousUrl);
-  uploadPreviewUrls.delete(module);
-
-  if (file.type && file.type.startsWith("image/")) {
-    const previewUrl = URL.createObjectURL(file);
-    uploadPreviewUrls.set(module, previewUrl);
-    const image = preview.querySelector("img");
-    const label = preview.querySelector("span");
-    if (image) image.src = previewUrl;
-    if (label) label.textContent = source === "camera" ? "照片已就绪，可直接开始识别" : "图片已就绪，可直接开始识别";
-    preview.classList.remove("hidden");
-  } else {
-    preview.classList.add("hidden");
+  if (next.length > MAX_UPLOAD_FILES) { alert("一次最多添加 10 个附件，请先删除不需要的图片。"); return existing; }
+  if (next.reduce((sum, file) => sum + file.size, 0) > MAX_UPLOAD_BYTES) {
+    alert("附件总大小不能超过 15 MB，请减少图片数量或压缩后上传。");
+    return existing;
   }
+  return next;
+}
+
+function getSelectedUploadFiles(module) {
+  return module === "agent" ? legalAgentState.files : (selectedUploadFiles.get(module) || []);
+}
+
+function setSelectedUploadFiles(module, files) {
+  if (module === "agent") legalAgentState.files = files;
+  else selectedUploadFiles.set(module, files);
+  renderUploadSelection(module);
+}
+
+function renderUploadSelection(module) {
+  const files = getSelectedUploadFiles(module);
+  (uploadPreviewUrls.get(module) || []).forEach(url => URL.revokeObjectURL(url));
+  const urls = [];
+  uploadPreviewUrls.set(module, urls);
+  const container = document.getElementById(module === "agent" ? "agent-attachment-list" : `${module}-capture-preview`);
+  const summary = `已添加 ${files.length} 个附件 · ${formatFileSize(files.reduce((sum, file) => sum + file.size, 0))}`;
+  const badge = document.getElementById(module === "agent" ? "agent-attachment-name" : `${module}-file-name`);
+  if (badge) { badge.textContent = summary; badge.classList.toggle("hidden", !files.length); }
+  document.getElementById(module === "agent" ? "agent-attachment" : `${module}-capture-preview`)?.classList.toggle("hidden", !files.length);
+  if (!container) return;
+  container.innerHTML = files.map((file, index) => {
+    let thumbnail = `<div class="upload-file-icon">${escapeHtml(file.name.split(".").pop().toUpperCase())}</div>`;
+    if (file.type.startsWith("image/") || /\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
+      const url = URL.createObjectURL(file);
+      urls.push(url);
+      thumbnail = `<img src="${url}" alt="第 ${index + 1} 张：${escapeHtml(file.name)}">`;
+    }
+    return `<div class="upload-file-item">${thumbnail}<div class="upload-file-info"><strong>${index + 1}. ${escapeHtml(file.name)}</strong><span>${formatFileSize(file.size)}</span></div><div class="upload-file-actions"><button type="button" onclick="moveUploadFile('${module}',${index},-1)" ${index === 0 ? "disabled" : ""} aria-label="将第 ${index + 1} 个附件前移">↑</button><button type="button" onclick="moveUploadFile('${module}',${index},1)" ${index === files.length - 1 ? "disabled" : ""} aria-label="将第 ${index + 1} 个附件后移">↓</button><button type="button" onclick="removeUploadFile('${module}',${index})" aria-label="删除第 ${index + 1} 个附件">×</button></div></div>`;
+  }).join("");
+}
+
+function removeUploadFile(module, index) {
+  if (module === "agent" && legalAgentState.sending) return;
+  setSelectedUploadFiles(module, getSelectedUploadFiles(module).filter((_, position) => position !== index));
+}
+
+function moveUploadFile(module, index, offset) {
+  if (module === "agent" && legalAgentState.sending) return;
+  const files = [...getSelectedUploadFiles(module)];
+  const destination = index + offset;
+  if (destination < 0 || destination >= files.length) return;
+  [files[index], files[destination]] = [files[destination], files[index]];
+  setSelectedUploadFiles(module, files);
+}
+
+function updateUploadSelection(module, files, source = "file") {
+  setSelectedUploadFiles(module, mergeUploadFiles(getSelectedUploadFiles(module), files));
 }
 
 function onFileSelected(inputId, nameId) {
   const input = document.getElementById(inputId);
   const module = inputId.replace(/-file$/, "");
-  if (input && input.files.length > 0) updateUploadSelection(module, input.files[0], "file");
+  if (input && input.files.length > 0) updateUploadSelection(module, input.files, "file");
+  if (input) input.value = "";
 }
 
 function openCameraCapture(module) {
@@ -1114,15 +1152,9 @@ function openCameraCapture(module) {
 function onCameraSelected(module) {
   const cameraInput = document.getElementById(`${module}-camera`);
   if (cameraInput && cameraInput.files.length > 0) {
-    updateUploadSelection(module, cameraInput.files[0], "camera");
+    updateUploadSelection(module, cameraInput.files, "camera");
+    cameraInput.value = "";
   }
-}
-
-function getSelectedUploadFile(module) {
-  const remembered = selectedUploadFiles.get(module);
-  if (remembered) return remembered;
-  const input = document.getElementById(`${module}-file`);
-  return input && input.files.length > 0 ? input.files[0] : null;
 }
 
 // ===== Drag & Drop =====
@@ -1135,14 +1167,13 @@ document.addEventListener("DOMContentLoaded", () => {
       zone.classList.remove("drag-over");
       const input = zone.querySelector("input[type='file']");
       if (input && e.dataTransfer.files.length > 0) {
-        input.files = e.dataTransfer.files;
         const module = input.id.replace(/-file$/, "");
-        updateUploadSelection(module, e.dataTransfer.files[0], "file");
+        updateUploadSelection(module, e.dataTransfer.files, "file");
       }
     });
-    zone.addEventListener("click", () => {
+    zone.addEventListener("click", event => {
       const input = zone.querySelector("input[type='file']");
-      if (input) input.click();
+      if (input && event.target !== input) input.click();
     });
   });
 });
@@ -1434,10 +1465,10 @@ async function submitAnalyze() {
 
   let url, body, fd;
   if (isUpload) {
-    const selectedFile = getSelectedUploadFile("analyze");
-    if (!selectedFile) return showError("analyze", "请选择文件或拍照");
+    const files = getSelectedUploadFiles("analyze");
+    if (!files.length) return showError("analyze", "请选择文件或拍照");
     fd = new FormData();
-    fd.append("file", selectedFile);
+    files.forEach(file => fd.append("file", file, file.name));
     url = "/api/analyze-stream";
   } else {
     const text = document.getElementById("analyze-text").value.trim();
@@ -1597,10 +1628,10 @@ async function submitReview() {
 
   let url, body, fd;
   if (isUpload) {
-    const selectedFile = getSelectedUploadFile("review");
-    if (!selectedFile) return showError("review", "请选择合同文件或拍照");
+    const files = getSelectedUploadFiles("review");
+    if (!files.length) return showError("review", "请选择合同文件或拍照");
     fd = new FormData();
-    fd.append("file", selectedFile);
+    files.forEach(file => fd.append("file", file, file.name));
     url = "/api/review-contract-stream";
   } else {
     const text = document.getElementById("review-text").value.trim();

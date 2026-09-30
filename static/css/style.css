@@ -857,6 +857,23 @@ textarea::placeholder, .text-field::placeholder, .search-input::placeholder {
   gap: 12px;
 }
 .capture-preview.hidden { display: none; }
+.agent-attachment.multi-upload { display: block; max-width: none; }
+.upload-selection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+.upload-selection-heading button { border: 0; background: transparent; color: var(--text-muted); font-size: 12px; cursor: pointer; }
+.multi-upload small { display: block; margin-top: 7px; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
+.upload-file-list, .capture-preview.upload-file-list { display: flex; flex-direction: column; gap: 8px; }
+.agent-attachment .upload-file-list { max-height: min(30vh, 280px); overflow-y: auto; overscroll-behavior: contain; }
+.capture-preview.upload-file-list { max-height: 340px; overflow-y: auto; }
+.upload-file-list.hidden, .capture-preview.upload-file-list.hidden { display: none; }
+.upload-file-item { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--border-card); border-radius: 7px; background: var(--bg-surface); }
+.upload-file-item img, .capture-preview .upload-file-item img, .upload-file-icon { flex: 0 0 48px; width: 48px; height: 48px; border-radius: 5px; object-fit: cover; }
+.upload-file-icon { display: grid; place-items: center; background: var(--bg-input); color: var(--accent); font-size: 11px; font-weight: 700; }
+.upload-file-info { flex: 1; min-width: 0; }
+.upload-file-info strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.upload-file-info span { font-size: 11px; color: var(--text-muted); }
+.upload-file-actions { display: flex; flex-shrink: 0; gap: 3px; }
+.upload-file-actions button { min-width: 32px; min-height: 36px; border: 1px solid var(--border-card); border-radius: 5px; background: var(--bg-input); color: var(--text-secondary); cursor: pointer; }
+.upload-file-actions button:disabled { opacity: .35; cursor: default; }
 .capture-preview img {
   width: 72px;
   height: 72px;

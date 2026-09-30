@@ -22,6 +22,7 @@ DEFAULT_MAX_UPLOAD_MB = 15
 DEFAULT_MAX_PDF_PAGES = 20
 DEFAULT_MAX_IMAGE_PIXELS = 25_000_000
 DEFAULT_MIN_PDF_TEXT_CHARS = 20
+MAX_UPLOAD_FILES = 10
 
 SUPPORTED_EXTENSIONS = frozenset(
     {"txt", "md", "pdf", "docx", "jpg", "jpeg", "png", "webp"}
@@ -61,6 +62,7 @@ class ParsedDocument:
     char_count: int = 0
     warnings: list[str] = field(default_factory=list)
     ocr_confidence: Optional[float] = None
+    files: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.char_count = len(self.text)
@@ -70,13 +72,16 @@ class ParsedDocument:
     def metadata(self) -> dict[str, Any]:
         """Return JSON-ready metadata, excluding the potentially large text."""
 
-        return {
+        metadata = {
             "method": self.method,
             "page_count": self.page_count,
             "char_count": self.char_count,
             "warnings": list(self.warnings),
             "ocr_confidence": self.ocr_confidence,
         }
+        if self.files:
+            metadata.update(file_count=len(self.files), files=list(self.files))
+        return metadata
 
     def to_dict(self) -> dict[str, Any]:
         return {"text": self.text, **self.metadata}
@@ -645,6 +650,54 @@ def parse_upload(file_storage: Any) -> tuple[str, str]:
     return filename, result.text
 
 
+def parse_uploads_detailed(file_storages, *, parser=None) -> tuple[str, ParsedDocument]:
+    """Parse ordered attachments atomically; preserve the single-file API."""
+    uploads = [upload for upload in file_storages if getattr(upload, "filename", "")]
+    if not uploads:
+        raise DocumentParseError("请选择需要识别的文件。", 400, "missing_file")
+    if len(uploads) > MAX_UPLOAD_FILES:
+        raise DocumentParseError(f"一次最多上传 {MAX_UPLOAD_FILES} 个附件。", 400, "too_many_files")
+    total_bytes = 0
+    for upload in uploads:
+        stream = getattr(upload, "stream", None)
+        if stream is not None and stream.seekable():
+            position = stream.tell()
+            stream.seek(0, 2)
+            total_bytes += stream.tell()
+            stream.seek(position)
+    if total_bytes > _max_upload_bytes():
+        raise DocumentParseError(f"附件总大小不能超过 {_max_upload_bytes() / 1024 / 1024:g} MB。", 413, "files_too_large")
+
+    parse = parser or parse_upload_detailed
+    parts = []
+    total_pages = 0
+    for index, upload in enumerate(uploads, 1):
+        try:
+            filename, parsed = parse(upload)
+        except DocumentParseError as error:
+            raise DocumentParseError(
+                f"第 {index} 个附件（{Path(upload.filename).name}）：{error.message}",
+                error.status_code, error.code,
+            ) from error
+        parts.append((Path(filename).name, parsed))
+        total_pages += parsed.page_count
+        if total_pages > _max_pdf_pages():
+            raise DocumentParseError("附件总页数超过允许的识别页数。", 413, "too_many_pages")
+    if len(parts) == 1:
+        return parts[0]
+    warnings = [f"附件 {index}：{warning}" for index, (_, parsed) in enumerate(parts, 1) for warning in parsed.warnings]
+    confidences = [parsed.ocr_confidence for _, parsed in parts if parsed.ocr_confidence is not None]
+    combined = ParsedDocument(
+        text="\n\n".join(f"【附件 {index}：{filename}】\n{parsed.text}" for index, (filename, parsed) in enumerate(parts, 1)),
+        method="multi_file",
+        page_count=total_pages,
+        warnings=warnings,
+        ocr_confidence=mean(confidences) if confidences else None,
+        files=[{"filename": filename, **parsed.metadata} for filename, parsed in parts],
+    )
+    return f"{len(parts)} 个附件", combined
+
+
 __all__ = [
     "DocumentParseError",
     "ParsedDocument",
@@ -657,4 +710,5 @@ __all__ = [
     "parse_txt",
     "parse_upload",
     "parse_upload_detailed",
+    "parse_uploads_detailed",
 ]

@@ -30,6 +30,7 @@ from core.doc_parser import (
     DocumentParseError,
     ocr_available,
     parse_upload_detailed,
+    parse_uploads_detailed,
 )
 from core.privacy import (
     RedactionSession,
@@ -106,6 +107,8 @@ try:
     app.config["MAX_CONTENT_LENGTH"] = max(1, int(float(os.getenv("MAX_UPLOAD_MB", "15")) * 1024 * 1024))
 except (TypeError, ValueError):
     app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
+# Multipart boundaries/filenames should not count against attachment bytes.
+app.config["MAX_CONTENT_LENGTH"] += 64 * 1024
 db.init_app(app)
 migrate.init_app(app, db)
 app.config["RATELIMIT_STORAGE_URI"] = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
@@ -222,6 +225,11 @@ def _prepare_document_for_model(text, max_chars, parsed=None, filename=""):
         document_meta["filename"] = os.path.basename(filename)
 
     document_meta["truncated"] = len(safe_text) > max_chars
+    if document_meta["truncated"] and parsed is not None and parsed.files:
+        raise DocumentParseError(
+            "附件识别文本较长，请减少附件或分批提交，避免遗漏后续内容。",
+            413, "attachments_too_long",
+        )
     if document_meta["truncated"]:
         document_meta.setdefault("warnings", []).append(
             f"文本共 {len(safe_text)} 字，本次模型分析使用前 {max_chars} 字。"
@@ -1466,7 +1474,16 @@ def _legal_agent_request_data():
                     data[key] = json.loads(value)
                 except (TypeError, ValueError):
                     data[key] = {} if key == "document_fields" else []
-    return data, request.files.get("file")
+    return data, _document_uploads()
+
+
+def _document_uploads():
+    # Repeat `file` for ordered batches; also accept `files` from API clients.
+    return [upload for key in ("file", "files") for upload in request.files.getlist(key) if upload.filename]
+
+
+def _parse_document_uploads(uploads):
+    return parse_uploads_detailed(uploads, parser=parse_upload_detailed)
 
 
 def _agent_document_result(doc_type, fields):
@@ -1523,7 +1540,7 @@ def _agent_attachment_preview(filename, parsed):
         return None
     session = RedactionSession()
     preview = session.redact(parsed.text or "")[:700]
-    return {
+    attachment = {
         "filename": os.path.basename(filename or "附件"),
         "method": parsed.metadata.get("method", "unknown"),
         "page_count": parsed.metadata.get("page_count", 1),
@@ -1532,6 +1549,10 @@ def _agent_attachment_preview(filename, parsed):
         "warnings": list(parsed.metadata.get("warnings") or []),
         "preview": preview,
     }
+    if parsed.files:
+        attachment["file_count"] = len(parsed.files)
+        attachment["files"] = [{"filename": item["filename"], "method": item["method"], "page_count": item["page_count"]} for item in parsed.files]
+    return attachment
 
 
 def _agent_store_draft_state(conversation, doc_type, fields, status="collecting"):
@@ -1581,7 +1602,7 @@ def _agent_needs_input(conversation, message, intent, answer, attachment=None, *
     return result
 
 
-def _run_legal_agent_turn(data, upload=None):
+def _run_legal_agent_turn(data, upload=None, prepared_attachment=None):
     if not isinstance(data, dict):
         return {"error": "请求格式错误"}, 400
     message = data.get("message", "")
@@ -1596,8 +1617,11 @@ def _run_legal_agent_turn(data, upload=None):
 
     parsed = None
     filename = ""
-    if upload is not None and upload.filename:
-        filename, parsed = parse_upload_detailed(upload)
+    uploads = upload if isinstance(upload, (list, tuple)) else ([upload] if upload is not None else [])
+    if prepared_attachment is not None:
+        filename, parsed = prepared_attachment
+    elif uploads:
+        filename, parsed = _parse_document_uploads(uploads)
     attachment_text = parsed.text if parsed is not None else ""
     if not message.strip() and not attachment_text.strip():
         return {"error": "请输入法律问题或上传需要分析的文件"}, 400
@@ -1713,6 +1737,8 @@ def _run_legal_agent_turn(data, upload=None):
         ), 200
 
     max_chars = 10000 if intent == INTENT_REVIEW else 8000
+    if parsed is not None and parsed.files:
+        max_chars = 30000
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
         combined_text, max_chars, parsed, filename
     )
@@ -1812,11 +1838,20 @@ def legal_agent_stream():
     data, upload = _legal_agent_request_data()
     if not isinstance(data, dict) or not isinstance(data.get("message", ""), str):
         return jsonify({"error": "消息内容必须是文本"}), 400
+    # Validate every attachment before opening SSE so 4xx errors also refund
+    # reserved free calls through require_approved, without a partial analysis.
+    prepared_attachment = _parse_document_uploads(upload) if upload else None
+    if prepared_attachment is not None and prepared_attachment[1].files:
+        filename, parsed = prepared_attachment
+        _prepare_document_for_model(
+            f"{data.get('message', '')}\n\n【附件正文】\n{parsed.text}",
+            30000, parsed, filename,
+        )
 
     def generate():
         yield f"data: {json.dumps({'stage': 'understand', 'status': '正在分析你的问题'}, ensure_ascii=False)}\n\n"
         yield f"data: {json.dumps({'stage': 'answer', 'status': '正在整理回答'}, ensure_ascii=False)}\n\n"
-        result, status = _run_legal_agent_turn(data, upload)
+        result, status = _run_legal_agent_turn(data, prepared_attachment=prepared_attachment)
         if status >= 400:
             yield f"data: {json.dumps({'done': True, 'result': result}, ensure_ascii=False)}\n\n"
             return
@@ -1858,8 +1893,9 @@ def analyze_document():
     """分析法律文书：上传文件或粘贴文本"""
     parsed = None
     filename = ""
-    if "file" in request.files and request.files["file"].filename:
-        filename, parsed = parse_upload_detailed(request.files["file"])
+    uploads = _document_uploads()
+    if uploads:
+        filename, parsed = _parse_document_uploads(uploads)
         text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
@@ -1871,7 +1907,7 @@ def analyze_document():
         return jsonify({"error": "请提供至少20字的文书内容"}), 400
 
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
-        text, 8000, parsed, filename
+        text, 30000 if parsed is not None and parsed.files else 8000, parsed, filename
     )
 
     if _is_current_demo_mode():
@@ -1899,8 +1935,9 @@ def analyze_document_stream():
     """分析法律文书（流式）"""
     parsed = None
     filename = ""
-    if "file" in request.files and request.files["file"].filename:
-        filename, parsed = parse_upload_detailed(request.files["file"])
+    uploads = _document_uploads()
+    if uploads:
+        filename, parsed = _parse_document_uploads(uploads)
         text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
@@ -1912,7 +1949,7 @@ def analyze_document_stream():
         return jsonify({"error": "请提供至少20字的文书内容"}), 400
 
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
-        text, 8000, parsed, filename
+        text, 30000 if parsed is not None and parsed.files else 8000, parsed, filename
     )
 
     if _is_current_demo_mode():
@@ -2025,8 +2062,9 @@ def review_contract():
     """审查合同风险"""
     parsed = None
     filename = ""
-    if "file" in request.files and request.files["file"].filename:
-        filename, parsed = parse_upload_detailed(request.files["file"])
+    uploads = _document_uploads()
+    if uploads:
+        filename, parsed = _parse_document_uploads(uploads)
         text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
@@ -2038,7 +2076,7 @@ def review_contract():
         return jsonify({"error": "请提供至少50字的合同内容"}), 400
 
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
-        text, 10000, parsed, filename
+        text, 30000 if parsed is not None and parsed.files else 10000, parsed, filename
     )
 
     if _is_current_demo_mode():
@@ -2067,8 +2105,9 @@ def review_contract_stream():
     """审查合同风险（流式）"""
     parsed = None
     filename = ""
-    if "file" in request.files and request.files["file"].filename:
-        filename, parsed = parse_upload_detailed(request.files["file"])
+    uploads = _document_uploads()
+    if uploads:
+        filename, parsed = _parse_document_uploads(uploads)
         text = parsed.text
     else:
         data = request.get_json(silent=True) or {}
@@ -2080,7 +2119,7 @@ def review_contract_stream():
         return jsonify({"error": "请提供至少50字的合同内容"}), 400
 
     model_text, privacy_meta, document_meta = _prepare_document_for_model(
-        text, 10000, parsed, filename
+        text, 30000 if parsed is not None and parsed.files else 10000, parsed, filename
     )
 
     if _is_current_demo_mode():
@@ -2712,11 +2751,11 @@ def student_legal_stream():
 @login_required
 def extract_document():
     """Extract a file without consuming an AI call or persisting the source."""
-    file_storage = request.files.get("file")
-    if not file_storage or not file_storage.filename:
+    uploads = _document_uploads()
+    if not uploads:
         return jsonify({"error": "请选择需要识别的文件"}), 400
 
-    filename, parsed = parse_upload_detailed(file_storage)
+    filename, parsed = _parse_document_uploads(uploads)
     session = RedactionSession()
     redacted_text = session.redact(parsed.text)
     return jsonify({

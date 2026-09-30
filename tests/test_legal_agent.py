@@ -265,6 +265,81 @@ class LegalAgentEndpointTests(unittest.TestCase):
         self.assertIn("支付拖欠工资三万元", second_body["document"]["body"])
         self.assertNotIn("【说明】", second_body["document"]["body"])
 
+    def test_multiple_attachments_reach_one_model_call_and_are_redacted(self):
+        for endpoint in ("/api/legal-agent", "/api/legal-agent-stream", "/api/analyze", "/api/review-contract"):
+            with self.subTest(endpoint=endpoint), mock.patch.object(
+                app_module, "_is_current_demo_mode", return_value=False
+            ), mock.patch.object(app_module, "_call_llm", return_value={"answer": "已合并审查", "risk_points": []}) as model, mock.patch.object(app_module, "save_record"):
+                response = self.client.post(endpoint, data={
+                    "message": "请审查这些合同页",
+                    "file": [
+                        (io.BytesIO("服务合同第一页：联系电话13800138000，双方约定付款后履行服务。".encode()), "page1.txt"),
+                        (io.BytesIO("服务合同第二页：免责条款，乙方对任何违约均不承担责任。".encode()), "page2.txt"),
+                    ],
+                })
+                payload = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 200)
+                model.assert_called_once()
+                prompt = model.call_args.args[1]
+                self.assertIn("第一页", prompt)
+                self.assertIn("免责条款", prompt)
+                self.assertLess(prompt.index("第一页"), prompt.index("第二页"))
+                self.assertNotIn("13800138000", prompt)
+                self.assertNotIn("13800138000", payload)
+                body = response.get_json() if "stream" not in endpoint else json.loads(payload.strip().split("\n\n")[-1][6:])["result"]
+                metadata = body.get("attachment") or body["document_meta"]
+                self.assertEqual(metadata["file_count"], 2)
+
+    def test_multiple_attachments_reach_professional_stream_model_once(self):
+        for endpoint in ("/api/analyze-stream", "/api/review-contract-stream"):
+            with self.subTest(endpoint=endpoint), mock.patch.object(
+                app_module, "_is_current_demo_mode", return_value=False
+            ), mock.patch.object(app_module, "call_llm_stream_json", return_value=iter([{"summary": "已审查"}])) as model, mock.patch.object(app_module, "save_record"):
+                response = self.client.post(endpoint, data={"file": [
+                    (io.BytesIO("第一页服务合同，甲乙双方约定费用与履行期限，以及服务验收标准。".encode()), "a.txt"),
+                    (io.BytesIO("第二页服务合同，对任何违约均不承担责任，另附争议解决条款。".encode()), "b.txt"),
+                ]})
+                payload = response.get_data(as_text=True)
+                self.assertEqual(response.status_code, 200)
+                model.assert_called_once()
+                self.assertIn("第一页", model.call_args.args[1])
+                self.assertIn("第二页", model.call_args.args[1])
+                self.assertIn('"file_count": 2', payload)
+
+    def test_extract_accepts_files_alias_and_returns_all_redacted_text(self):
+        response = self.client.post("/api/documents/extract", data={"files": [
+            (io.BytesIO("第一页联系电话13800138000".encode()), "first.txt"),
+            (io.BytesIO("第二页退款条款".encode()), "second.txt"),
+        ]})
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertIn("第二页退款条款", body["redacted_text"])
+        self.assertNotIn("13800138000", body["redacted_text"])
+        self.assertEqual(body["document_meta"]["file_count"], 2)
+
+    def test_corrupt_later_attachment_never_calls_model_including_sse(self):
+        for endpoint in ("/api/legal-agent", "/api/legal-agent-stream", "/api/analyze", "/api/analyze-stream", "/api/review-contract", "/api/review-contract-stream", "/api/documents/extract"):
+            with self.subTest(endpoint=endpoint), mock.patch.object(app_module, "_call_llm") as model, mock.patch.object(app_module, "call_llm_stream_json") as stream_model:
+                response = self.client.post(endpoint, data={"file": [
+                    (io.BytesIO(b"Valid first page"), "first.txt"),
+                    (io.BytesIO(b"invalid image"), "broken.png"),
+                ]})
+                self.assertEqual(response.status_code, 422)
+                self.assertIn("第 2 个附件", response.get_json()["error"])
+                model.assert_not_called()
+                stream_model.assert_not_called()
+
+    def test_long_batches_are_rejected_instead_of_dropping_later_pages(self):
+        for endpoint in ("/api/legal-agent", "/api/legal-agent-stream", "/api/analyze"):
+            with self.subTest(endpoint=endpoint), mock.patch.object(app_module, "_call_llm") as model:
+                response = self.client.post(endpoint, data={"file": [
+                    (io.BytesIO(("条款" * 16000).encode()), "long.txt"),
+                    (io.BytesIO("最后一页不可遗漏".encode()), "last.txt"),
+                ]})
+                self.assertEqual(response.status_code, 413)
+                self.assertEqual(response.get_json()["code"], "attachments_too_long")
+                model.assert_not_called()
+
     def test_stream_emits_progress_chunks_and_final_envelope(self):
         model_result = {
             "answer": "先固定劳动关系、工资标准和欠薪事实，再向单位书面催付并根据情况申请劳动仲裁。",
