@@ -70,3 +70,7 @@ google-services.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Android release binaries we intentionally publish (overrides "*.apk" above)
+!releases/
+!releases/*.apk
