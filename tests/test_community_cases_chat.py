@@ -17,8 +17,9 @@ with mock.patch.dict(
 ):
     import app as app_module
 
-from core.models import Conversation, ConversationMessage, db
+from core.models import Conversation, ConversationMessage, User, db
 from core.cases.models import CaseCategory, CaseLawReference, LegalCase, LegalCaseCategory
+from core.community.models import CommunityComment, CommunityPost, CommunityReport, ModerationAction
 
 
 def register(client, prefix):
@@ -56,6 +57,74 @@ def test_anonymous_community_post_comments_and_reactions():
     assert detail["post"]["counts"]["comments"] == 1
     assert isinstance(detail["post"]["related_cases"], list)
     assert all(case["legal_domain"] == "housing" for case in detail["post"]["related_cases"])
+
+
+def test_admin_can_audit_and_manage_anonymous_community_content():
+    owner_client = app_module.app.test_client()
+    reporter_client = app_module.app.test_client()
+    admin_client = app_module.app.test_client()
+    owner = register(owner_client, "community-owner")
+    reporter = register(reporter_client, "community-reporter")
+    admin = register(admin_client, "community-admin")
+    with app_module.app.app_context():
+        User.query.get(admin["id"]).is_admin = True
+        db.session.commit()
+
+    created = owner_client.post("/api/community/posts", json={
+        "category": "campus-rights",
+        "post_type": "legal_help",
+        "title": "匿名校园求助",
+        "body": "我需要管理员处理这条测试内容。",
+        "is_anonymous": True,
+    }).get_json()["post"]
+    post_id = created["id"]
+    comment_id = owner_client.post(
+        f"/api/community/posts/{post_id}/comments", json={"body": "匿名楼主补充说明。"}
+    ).get_json()["comment"]["id"]
+    report_response = reporter_client.post("/api/community/reports", json={
+        "target_type": "post", "target_id": post_id, "reason": "测试举报",
+    })
+    assert report_response.status_code == 201
+
+    assert owner_client.get("/api/community/moderation/overview").status_code == 403
+    overview = admin_client.get("/api/community/moderation/overview").get_json()
+    managed_post = next(item for item in overview["posts"] if item["id"] == post_id)
+    assert managed_post["is_anonymous"] is True
+    assert managed_post["author_account"] == {"id": owner["id"], "username": owner["username"]}
+    pending_report = next(item for item in overview["reports"] if item["target_id"] == str(post_id))
+    assert pending_report["reporter"]["username"] == reporter["username"]
+    assert pending_report["target"]["author_account"]["username"] == owner["username"]
+
+    detail = admin_client.get(f"/api/community/moderation/posts/{post_id}").get_json()
+    assert detail["comments"][0]["author_account"]["username"] == owner["username"]
+    hidden_comment = admin_client.post(
+        f"/api/community/moderation/content/comment/{comment_id}",
+        json={"action": "hide", "reason": "测试隐藏回复"},
+    )
+    assert hidden_comment.status_code == 200
+    with app_module.app.app_context():
+        assert CommunityComment.query.get(comment_id).status == "hidden"
+        assert CommunityPost.query.get(post_id).comment_count == 0
+
+    restored_comment = admin_client.post(
+        f"/api/community/moderation/content/comment/{comment_id}",
+        json={"action": "restore", "reason": "测试恢复回复"},
+    )
+    assert restored_comment.get_json()["content_status"] == "published"
+    hidden_post = admin_client.post(
+        f"/api/community/moderation/content/post/{post_id}",
+        json={"action": "hide", "reason": "测试隐藏帖子"},
+    )
+    assert hidden_post.get_json()["content_status"] == "hidden"
+    assert owner_client.get(f"/api/community/posts/{post_id}").status_code == 404
+    restored_post = admin_client.post(
+        f"/api/community/moderation/content/post/{post_id}",
+        json={"action": "restore", "reason": "测试恢复帖子"},
+    )
+    assert restored_post.get_json()["content_status"] == "published"
+    with app_module.app.app_context():
+        assert CommunityReport.query.filter_by(target_id=str(post_id)).one().status == "resolved"
+        assert ModerationAction.query.filter_by(moderator_id=admin["id"]).count() >= 4
 
 
 def test_ai_conversation_becomes_confirmable_anonymous_draft():

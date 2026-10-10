@@ -2,10 +2,11 @@ from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 from flask_login import current_user, login_required
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 
 from core.extensions import limiter
-from core.models import db
+from core.models import User, db
+from core.moderation.audit import log_admin_action
 from core.recommendations.events import record_event
 from core.search.client import search_ids
 from core.search.indexing import enqueue_index, process_outbox
@@ -39,6 +40,137 @@ def _post_or_404(post_id, include_hidden=False):
     if not include_hidden:
         query = query.filter_by(status="published")
     return query.first()
+
+
+def _admin_guard():
+    if not current_user.is_admin:
+        return jsonify({"error": "需要管理员权限"}), 403
+    return None
+
+
+def _audit_author(author):
+    if author is None:
+        return {"id": None, "username": "已注销用户"}
+    return {"id": author.id, "username": author.username}
+
+
+def _moderation_post_payload(post, *, detail=False):
+    payload = {
+        "id": post.id,
+        "title": post.title,
+        "body": post.body if detail else post.body[:240] + ("…" if len(post.body) > 240 else ""),
+        "post_type": post.post_type,
+        "help_status": post.help_status,
+        "is_anonymous": post.is_anonymous,
+        "status": post.status,
+        "category": {"slug": post.category.slug, "name": post.category.name},
+        "author_account": _audit_author(post.author),
+        "counts": {
+            "views": post.view_count,
+            "likes": post.like_count,
+            "comments": post.comment_count,
+            "favorites": post.favorite_count,
+        },
+        "created_at": post.created_at.isoformat(timespec="minutes"),
+        "updated_at": post.updated_at.isoformat(timespec="minutes"),
+    }
+    return payload
+
+
+def _moderation_comment_payload(comment):
+    return {
+        "id": comment.id,
+        "post_id": comment.post_id,
+        "parent_id": comment.parent_id,
+        "body": comment.body,
+        "status": comment.status,
+        "like_count": comment.like_count,
+        "author_account": _audit_author(comment.author),
+        "created_at": comment.created_at.isoformat(timespec="minutes"),
+    }
+
+
+def _report_target_payload(report):
+    if not report.target_id.isdigit():
+        return {"exists": False, "summary": f"{report.target_type} #{report.target_id}"}
+    target_id = int(report.target_id)
+    if report.target_type == "post":
+        target = CommunityPost.query.get(target_id)
+        if target:
+            return {
+                "exists": True,
+                "status": target.status,
+                "summary": target.title,
+                "preview": target.body[:160],
+                "author_account": _audit_author(target.author),
+                "is_anonymous": target.is_anonymous,
+            }
+    elif report.target_type == "comment":
+        target = CommunityComment.query.get(target_id)
+        if target:
+            return {
+                "exists": True,
+                "status": target.status,
+                "summary": f"帖子《{target.post.title}》中的回复",
+                "preview": target.body[:160],
+                "author_account": _audit_author(target.author),
+                "is_anonymous": bool(target.post.is_anonymous and target.author_id == target.post.author_id),
+            }
+    return {"exists": False, "summary": f"{report.target_type} #{report.target_id}"}
+
+
+def _moderation_report_payload(report):
+    reporter = User.query.get(report.reporter_id)
+    resolver = User.query.get(report.resolved_by) if report.resolved_by else None
+    return {
+        "id": report.id,
+        "target_type": report.target_type,
+        "target_id": report.target_id,
+        "reason": report.reason,
+        "detail": report.detail,
+        "status": report.status,
+        "reporter": _audit_author(reporter),
+        "resolved_by": resolver.username if resolver else "",
+        "resolved_by_id": report.resolved_by,
+        "target": _report_target_payload(report),
+        "created_at": report.created_at.isoformat(timespec="minutes"),
+        "resolved_at": report.resolved_at.isoformat(timespec="minutes") if report.resolved_at else "",
+    }
+
+
+def _apply_moderation_action(target_type, target_id, action):
+    status_for_action = {"hide": "hidden", "restore": "published", "delete": "deleted"}
+    next_status = status_for_action.get(action)
+    if next_status is None:
+        raise ValueError("不支持的管理操作")
+    if target_type == "post":
+        target = CommunityPost.query.get(target_id)
+    elif target_type == "comment":
+        target = CommunityComment.query.get(target_id)
+    else:
+        raise ValueError("不支持的内容类型")
+    if target is None:
+        return None
+
+    previous_status = target.status
+    target.status = next_status
+    if target_type == "post":
+        if next_status == "published":
+            enqueue_index("community_post", target.id, {
+                "title": target.title,
+                "body": target.body,
+                "category": target.category.slug,
+                "post_type": target.post_type,
+                "status": target.status,
+            })
+        else:
+            enqueue_index("community_post", target.id, operation="delete")
+    elif previous_status != next_status:
+        if previous_status == "published":
+            target.post.comment_count = max(0, target.post.comment_count - 1)
+        elif next_status == "published":
+            target.post.comment_count += 1
+    return target
 
 
 @community_bp.get("/categories")
@@ -103,7 +235,13 @@ def add_post():
         post, privacy_meta = create_post(current_user.id, _json())
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-    return jsonify({"status": "ok", "post": serialize_post(post, current_user.id), "privacy_meta": privacy_meta}), 201
+    return jsonify({
+        "status": "ok",
+        "post": serialize_post(post, current_user.id),
+        "privacy_meta": privacy_meta,
+        "review_state": privacy_meta.get("review_state", "approved"),
+        "warnings": privacy_meta.get("warnings", []),
+    }), 201
 
 
 @community_bp.get("/posts/<int:post_id>")
@@ -232,10 +370,15 @@ def add_comment(post_id):
     if post is None:
         return jsonify({"error": "帖子不存在"}), 404
     try:
-        comment = create_comment(current_user.id, post, _json())
+        comment, meta = create_comment(current_user.id, post, _json())
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-    return jsonify({"status": "ok", "comment": serialize_comment(comment, post, current_user.id)}), 201
+    return jsonify({
+        "status": "ok",
+        "comment": serialize_comment(comment, post, current_user.id),
+        "review_state": meta.get("review_state", "approved"),
+        "warnings": meta.get("warnings", []),
+    }), 201
 
 
 @community_bp.post("/comments/<int:comment_id>/like")
@@ -312,39 +455,143 @@ def read_notifications():
 @community_bp.get("/moderation/reports")
 @login_required
 def moderation_reports():
-    if not current_user.is_admin:
-        return jsonify({"error": "需要管理员权限"}), 403
+    denied = _admin_guard()
+    if denied:
+        return denied
     rows = CommunityReport.query.order_by(CommunityReport.created_at.desc()).limit(100).all()
-    return jsonify({"reports": [{
-        "id": row.id, "target_type": row.target_type, "target_id": row.target_id,
-        "reason": row.reason, "detail": row.detail, "status": row.status,
-        "created_at": row.created_at.isoformat(timespec="minutes"),
-    } for row in rows]})
+    return jsonify({"reports": [_moderation_report_payload(row) for row in rows]})
+
+
+@community_bp.get("/moderation/overview")
+@login_required
+def moderation_overview():
+    denied = _admin_guard()
+    if denied:
+        return denied
+
+    page = max(1, request.args.get("page", 1, type=int))
+    per_page = max(1, min(request.args.get("per_page", 30, type=int), 50))
+    status = request.args.get("status", "all").strip()
+    query = CommunityPost.query
+    if status in {"published", "hidden", "deleted"}:
+        query = query.filter(CommunityPost.status == status)
+    search = request.args.get("q", "").strip()[:120]
+    if search:
+        term = f"%{search}%"
+        query = query.outerjoin(User, CommunityPost.author_id == User.id).filter(or_(
+            CommunityPost.title.ilike(term),
+            CommunityPost.body.ilike(term),
+            User.username.ilike(term),
+        ))
+    pagination = query.order_by(CommunityPost.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    reports = CommunityReport.query.order_by(
+        case((CommunityReport.status == "pending", 0), else_=1),
+        CommunityReport.created_at.desc(),
+    ).limit(50).all()
+    return jsonify({
+        "metrics": {
+            "posts": CommunityPost.query.count(),
+            "published_posts": CommunityPost.query.filter_by(status="published").count(),
+            "hidden_posts": CommunityPost.query.filter_by(status="hidden").count(),
+            "comments": CommunityComment.query.count(),
+            "pending_reports": CommunityReport.query.filter_by(status="pending").count(),
+        },
+        "posts": [_moderation_post_payload(row) for row in pagination.items],
+        "reports": [_moderation_report_payload(row) for row in reports],
+        "pagination": {
+            "page": pagination.page,
+            "pages": pagination.pages,
+            "total": pagination.total,
+            "has_next": pagination.has_next,
+            "has_prev": pagination.has_prev,
+        },
+    })
+
+
+@community_bp.get("/moderation/posts/<int:post_id>")
+@login_required
+def moderation_post_detail(post_id):
+    denied = _admin_guard()
+    if denied:
+        return denied
+    post = CommunityPost.query.get(post_id)
+    if post is None:
+        return jsonify({"error": "帖子不存在"}), 404
+    comments = CommunityComment.query.filter_by(post_id=post.id).order_by(CommunityComment.created_at.asc()).all()
+    return jsonify({
+        "post": _moderation_post_payload(post, detail=True),
+        "comments": [_moderation_comment_payload(row) for row in comments],
+    })
+
+
+@community_bp.post("/moderation/content/<string:target_type>/<int:target_id>")
+@login_required
+def moderate_content(target_type, target_id):
+    denied = _admin_guard()
+    if denied:
+        return denied
+    data = _json()
+    action = str(data.get("action") or "").strip()
+    reason = str(data.get("reason") or "管理员处理")[:240]
+    try:
+        target = _apply_moderation_action(target_type, target_id, action)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if target is None:
+        return jsonify({"error": "内容不存在"}), 404
+    db.session.add(ModerationAction(
+        moderator_id=current_user.id,
+        target_type=target_type,
+        target_id=str(target_id),
+        action=action,
+        reason=reason,
+    ))
+    if action in {"hide", "delete"}:
+        CommunityReport.query.filter_by(
+            target_type=target_type, target_id=str(target_id), status="pending"
+        ).update(
+            {"status": "resolved", "resolved_at": datetime.utcnow(), "resolved_by": current_user.id},
+            synchronize_session=False,
+        )
+    log_admin_action("community_moderate", target_type=target_type, target_id=str(target_id), detail=f"{action}：{reason}")
+    db.session.commit()
+    if target_type == "post":
+        process_outbox(limit=10)
+    return jsonify({"status": "ok", "content_status": target.status})
 
 
 @community_bp.post("/moderation/reports/<int:report_id>/resolve")
 @login_required
 def resolve_report(report_id):
-    if not current_user.is_admin:
-        return jsonify({"error": "需要管理员权限"}), 403
+    denied = _admin_guard()
+    if denied:
+        return denied
     report = CommunityReport.query.get(report_id)
     if report is None:
         return jsonify({"error": "举报不存在"}), 404
     data = _json()
     action = data.get("action", "dismiss")
-    if action == "hide" and report.target_type == "post" and report.target_id.isdigit():
-        target = CommunityPost.query.get(int(report.target_id))
-        if target:
-            target.status = "hidden"
-    elif action == "hide" and report.target_type == "comment" and report.target_id.isdigit():
-        target = CommunityComment.query.get(int(report.target_id))
-        if target:
-            target.status = "hidden"
+    if action not in {"dismiss", "hide", "delete"}:
+        return jsonify({"error": "不支持的举报处理方式"}), 400
+    if action != "dismiss":
+        if report.target_type not in {"post", "comment"} or not report.target_id.isdigit():
+            return jsonify({"error": "该举报类型暂不支持直接处理"}), 400
+        target = _apply_moderation_action(report.target_type, int(report.target_id), action)
+        if target is None:
+            return jsonify({"error": "被举报内容不存在"}), 404
     report.status = "resolved" if action == "hide" else "dismissed"
+    if action == "delete":
+        report.status = "resolved"
     report.resolved_at = datetime.utcnow()
+    report.resolved_by = current_user.id
     db.session.add(ModerationAction(
         moderator_id=current_user.id, target_type=report.target_type, target_id=report.target_id,
         action=action, reason=str(data.get("reason") or report.reason)[:240],
     ))
+    log_admin_action("report_resolve", target_type=report.target_type, target_id=report.target_id, detail=f"{action}：举报 #{report.id}")
     db.session.commit()
+    if report.target_type == "post" and action != "dismiss":
+        process_outbox(limit=10)
     return jsonify({"status": "ok"})

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>明鉴 · 管理控制台</title>
+<link rel="stylesheet" href="/static/css/admin.css?v=20261010admin2">
+</head>
+<body>
+
+<!-- 管理员登录 -->
+<div id="admin-login" class="admin-login">
+  <form class="admin-login-card" onsubmit="return adminLogin()">
+    <div class="admin-brand">&#x2696; 明鉴 · 管理控制台</div>
+    <p class="admin-login-hint">仅限管理员账号登录</p>
+    <label>管理员账号
+      <input id="admin-login-username" autocomplete="username" autofocus>
+    </label>
+    <label>密码
+      <input id="admin-login-password" type="password" autocomplete="current-password">
+    </label>
+    <button class="admin-btn primary" type="submit">登录</button>
+    <p id="admin-login-error" class="admin-error"></p>
+  </form>
+</div>
+
+<!-- 控制台 -->
+<div id="admin-app" class="admin-app hidden">
+  <aside class="admin-side">
+    <div class="admin-side-brand">&#x2696; 明鉴后台</div>
+    <nav id="admin-nav">
+      <button type="button" data-section="dashboard" class="active">概览</button>
+      <button type="button" data-section="users">用户管理</button>
+      <button type="button" data-section="review">内容审核</button>
+      <button type="button" data-section="reports">举报处理</button>
+      <button type="button" data-section="cases">案例库</button>
+      <button type="button" data-section="audit">会话审计</button>
+      <button type="button" data-section="logs">操作日志</button>
+      <button type="button" data-section="system">系统配置</button>
+    </nav>
+    <div class="admin-side-foot">
+      <span id="admin-who"></span>
+      <button type="button" class="admin-btn ghost" onclick="adminLogout()">退出登录</button>
+    </div>
+  </aside>
+  <main class="admin-main">
+    <header class="admin-main-head"><h2 id="admin-section-title">概览</h2></header>
+    <div id="admin-view" class="admin-view"><p class="admin-empty">加载中…</p></div>
+  </main>
+</div>
+
+<!-- 模态框 -->
+<div id="admin-modal" class="admin-modal hidden" onclick="if(event.target===this)closeAdminModal()">
+  <div class="admin-modal-body">
+    <div class="admin-modal-head">
+      <h3 id="admin-modal-title"></h3>
+      <button type="button" class="admin-modal-close" onclick="closeAdminModal()" aria-label="关闭">×</button>
+    </div>
+    <div id="admin-modal-content"></div>
+  </div>
+</div>
+
+<script src="/static/js/admin.js?v=20261010admin2"></script>
+</body>
+</html>

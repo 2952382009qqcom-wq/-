@@ -7,10 +7,23 @@ const vm = require('node:vm');
 function setup() {
   const elements = new Map();
   function element(id) {
-    if (!elements.has(id)) elements.set(id, {
-      value: '', textContent: '', innerHTML: '', files: [], style: {}, focus() {},
-      classList: { toggle() {}, add() {}, remove() {} },
-    });
+    if (!elements.has(id)) {
+      const classes = new Set();
+      elements.set(id, {
+        id,
+        value: '', textContent: '', innerHTML: '', files: [], style: {}, focus() {},
+        classList: {
+          contains: name => classes.has(name),
+          add: name => classes.add(name),
+          remove: name => classes.delete(name),
+          toggle(name, force = !classes.has(name)) {
+            if (force) classes.add(name);
+            else classes.delete(name);
+            return force;
+          },
+        },
+      });
+    }
     return elements.get(id);
   }
   const alerts = [];
@@ -27,6 +40,35 @@ function setup() {
 
 function photo(name, size = 20, lastModified = 1) {
   return { name, size, lastModified, type: 'image/png' };
+}
+
+for (const module of ['review', 'analyze']) {
+  test(`${module} upload tab reveals file/camera controls and repeated switching preserves attachments`, () => {
+    const { context, run, element } = setup();
+    const paste = element(`${module}-paste`);
+    const upload = element(`${module}-upload`);
+    const tabs = [element(`${module}-paste-tab`), element(`${module}-upload-tab`)];
+    paste.classList.add('active');
+    upload.classList.add('hidden');
+    tabs[0].classList.add('active');
+    element(`module-${module}`).querySelectorAll = selector => selector === '.tab' ? tabs : [paste, upload];
+
+    run(`switchTab('${module}', 'upload')`);
+    assert.equal(upload.classList.contains('hidden'), false);
+    assert.equal(upload.classList.contains('active'), true);
+    assert.equal(paste.classList.contains('active'), false);
+    assert.equal(tabs[1].classList.contains('active'), true);
+
+    context.photos = [photo('contract.png')];
+    run(`updateUploadSelection('${module}', photos); switchTab('${module}', 'paste')`);
+    assert.equal(upload.classList.contains('hidden'), true);
+    assert.equal(paste.classList.contains('hidden'), false);
+    assert.equal(paste.classList.contains('active'), true);
+
+    run(`switchTab('${module}', 'upload')`);
+    assert.equal(upload.classList.contains('hidden'), false);
+    assert.equal(run(`getSelectedUploadFiles('${module}').length`), 1);
+  });
 }
 
 test('album multi-select and repeated camera captures append; empty/cancel keeps attachments', () => {

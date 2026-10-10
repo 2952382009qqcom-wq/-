@@ -1051,14 +1051,15 @@ async function exportAgentDocument(format = "docx") {
 function switchTab(module, tab) {
   const section = document.getElementById(`module-${module}`);
   section.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
-  section.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+  section.querySelectorAll(".tab-pane").forEach(p => {
+    const selected = p.id === `${module}-${tab}`;
+    p.classList.toggle("active", selected);
+    p.classList.toggle("hidden", !selected);
+  });
 
   const tabs = section.querySelectorAll(".tab");
   if (tab === "upload" && tabs.length > 1) tabs[1].classList.add("active");
   else if (tabs.length > 0) tabs[0].classList.add("active");
-
-  const pane = document.getElementById(`${module}-${tab}`);
-  if (pane) pane.classList.add("active");
 }
 
 // ===== File Selection =====
@@ -1351,9 +1352,97 @@ async function apiGet(url) {
   }
 }
 
+const resultValueLabels = {
+  law_name: "法规",
+  article: "条款",
+  content: "内容",
+  note: "说明",
+  summary: "摘要",
+  suggestion: "建议",
+  role: "身份",
+  party_role: "身份",
+  name: "姓名或名称",
+  party_name: "姓名或名称",
+  identity: "身份信息",
+  description: "说明",
+  value: "内容",
+  plaintiff: "原告",
+  defendant: "被告",
+  applicant: "申请人",
+  respondent: "被申请人",
+  appellant: "上诉人",
+  appellee: "被上诉人",
+};
+
+function cleanDisplayText(value) {
+  if (value === null || value === undefined) return "";
+  if (!["string", "number", "boolean"].includes(typeof value)) return "";
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return /^(?:\[object Object\]|object Object|undefined|null|none|nan)$/i.test(text) ? "" : text;
+}
+
+function readableResultValue(value, depth = 0) {
+  if (depth > 4) return "";
+  const scalar = cleanDisplayText(value);
+  if (scalar) return scalar;
+  if (Array.isArray(value)) {
+    return value.map(item => readableResultValue(item, depth + 1)).filter(Boolean).join("；");
+  }
+  if (value && typeof value === "object") {
+    const lawName = cleanDisplayText(value.law_name);
+    if (lawName) {
+      const article = readableResultValue(value.article, depth + 1);
+      const detail = readableResultValue(value.content || value.note || value.applicability, depth + 1);
+      const heading = `《${lawName.replace(/[《》]/g, "")}》${article}`;
+      return detail ? `${heading}：${detail}` : heading;
+    }
+    return Object.entries(value).map(([key, nested]) => {
+      const text = readableResultValue(nested, depth + 1);
+      if (!text) return "";
+      const label = resultValueLabels[key] || (/[㐀-鿿]/.test(key) ? key : "");
+      return label ? `${label}：${text}` : text;
+    }).filter(Boolean).join("；");
+  }
+  return "";
+}
+
+function partyDisplayText(value, roleOverride = "") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const text = readableResultValue(value);
+    return roleOverride && text ? `${roleOverride}：${text}` : text;
+  }
+  const first = keys => keys.map(key => readableResultValue(value[key])).find(Boolean) || "";
+  const role = roleOverride || first(["role", "party_role", "type", "角色", "诉讼地位", "当事人身份"]);
+  const name = first(["name", "party_name", "party", "entity", "姓名", "名称", "当事人"]);
+  const detail = first(["identity", "description", "basic_info", "status", "身份信息", "基本信息"]);
+  if (name) {
+    const main = role ? `${role}：${name}` : name;
+    return detail && detail !== role && detail !== name ? `${main}（${detail}）` : main;
+  }
+  const generic = readableResultValue(value);
+  return role && generic && generic !== role ? `${role}：${generic}` : (role || generic);
+}
+
+function normalizePartyEntries(value) {
+  if (!value) return [];
+  let candidates = [];
+  if (Array.isArray(value)) {
+    candidates = value.map(item => partyDisplayText(item));
+  } else if (typeof value === "object") {
+    const partyKeys = new Set(["role", "party_role", "type", "角色", "诉讼地位", "当事人身份", "name", "party_name", "party", "entity", "姓名", "名称", "当事人", "identity", "description", "basic_info", "status", "身份信息", "基本信息"]);
+    const isSingleParty = Object.keys(value).some(key => partyKeys.has(key));
+    candidates = isSingleParty
+      ? [partyDisplayText(value)]
+      : Object.entries(value).map(([role, info]) => partyDisplayText(info, resultValueLabels[role] || role));
+  } else {
+    candidates = [partyDisplayText(value)];
+  }
+  return [...new Set(candidates.map(cleanDisplayText).filter(Boolean))];
+}
+
 function escapeHtml(s) {
   const div = document.createElement("div");
-  div.textContent = s;
+  div.textContent = readableResultValue(s);
   return div.innerHTML;
 }
 
@@ -1417,8 +1506,9 @@ function renderAnalyzeResult(result) {
     <div class="stat-cell"><div class="stat-value">${(result.risk_points || []).length}</div><div class="stat-label">风险点</div></div>
   </div>`;
 
-  if (result.parties && result.parties.length) {
-    html += `<div class="result-section-title">涉及各方</div><p>${result.parties.map(escapeHtml).join(" &nbsp;·&nbsp; ")}</p>`;
+  const parties = normalizePartyEntries(result.parties);
+  if (parties.length) {
+    html += `<div class="result-section-title">涉及各方</div><p>${parties.map(escapeHtml).join(" &nbsp;·&nbsp; ")}</p>`;
   }
 
   if (result.key_clauses && result.key_clauses.length) {
@@ -2852,7 +2942,6 @@ function saveConfig() {
         document.getElementById("cfg-key").value = "";
         document.getElementById("cfg-key").placeholder = "已保存，可输入新 Key 覆盖";
         updateConfigCurrent(true);
-        updateStatusBadge(false);
       } else {
         msgEl.textContent = data.error || "保存失败";
         msgEl.style.color = "var(--danger)";
@@ -2883,18 +2972,6 @@ async function testConfig() {
   } catch (e) {
     msgEl.textContent = "网络错误";
     msgEl.style.color = "var(--danger)";
-  }
-}
-
-function updateStatusBadge(isDemo) {
-  const pulse = document.getElementById("status-pulse");
-  const label = document.getElementById("api-status-label");
-  if (isDemo) {
-    pulse.classList.remove("live");
-    label.textContent = "演示模式";
-  } else {
-    pulse.classList.add("live");
-    label.textContent = "AI 已连接";
   }
 }
 
@@ -2936,19 +3013,9 @@ function applyUserUI(u) {
   const workspaceName = document.getElementById("workspace-username");
   if (workspaceName) workspaceName.textContent = u.username;
 
-  // 全部先隐藏
-  document.getElementById("admin-status-group").style.display = "none";
-  document.getElementById("btn-admin-panel").style.display = "none";
   document.getElementById("btn-config-gear").style.display = "";
   document.getElementById("approval-hint").classList.add("hidden");
-
-  if (u.is_admin) {
-    document.getElementById("admin-status-group").style.display = "";
-    document.getElementById("btn-admin-panel").style.display = "";
-    document.getElementById("btn-config-gear").style.display = "";
-  } else {
-    updateQuotaHint();
-  }
+  updateQuotaHint();
   loadAgentConversations();
   if (typeof initMingjianChat === "function") initMingjianChat();
 }
@@ -2958,7 +3025,7 @@ function updateQuotaHint() {
   const hint = document.getElementById("approval-hint");
   const text = document.getElementById("free-quota-text");
 
-  if (!u || u.is_admin) {
+  if (!u || u.is_admin || u.is_test_account) {
     hint.classList.add("hidden");
     return;
   }
@@ -2994,6 +3061,7 @@ async function doLogin() {
     });
     const data = await resp.json();
     if (data.status === "ok") {
+      if (data.user.is_admin) { window.location.href = "/admin"; return false; }
       hideAuth();
       applyUserUI(data.user);
       initApp();
@@ -3042,8 +3110,6 @@ async function doLogout() {
   if (typeof closeCaseDetail === "function") closeCaseDetail();
   if (typeof closeChatDrawer === "function") closeChatDrawer();
   document.getElementById("header-user").classList.add("hidden");
-  document.getElementById("admin-status-group").style.display = "none";
-  document.getElementById("btn-admin-panel").style.display = "none";
   document.getElementById("btn-config-gear").style.display = "none";
   document.getElementById("approval-hint").classList.add("hidden");
   document.getElementById("history-overlay").classList.add("hidden");
@@ -3058,206 +3124,15 @@ async function doLogout() {
 
 async function initApp() {
   try {
-    const data = await apiGet("/api/status");
-    if (!data.error) {
-      updateStatusBadge(data.demo_mode);
-    }
-  } catch (e) {}
-
-  try {
     const resp = await fetch("/api/auth/status");
     const data = await resp.json();
     if (data.authenticated && data.user) {
+      if (data.user.is_admin) { window.location.href = "/admin"; return; }
       window._user = data.user;
-      if (data.user.is_admin) {
-        document.getElementById("admin-status-group").style.display = "";
-        document.getElementById("btn-admin-panel").style.display = "";
-        document.getElementById("btn-config-gear").style.display = "";
-      } else {
-        document.getElementById("btn-config-gear").style.display = "";
-        updateQuotaHint();
-      }
+      document.getElementById("btn-config-gear").style.display = "";
+      updateQuotaHint();
     }
   } catch (e) {}
-}
-
-// ===== Admin Panel =====
-function toggleAdminPanel() {
-  document.getElementById("admin-overlay").classList.toggle("hidden");
-  document.getElementById("admin-panel").classList.toggle("hidden");
-  if (!document.getElementById("admin-panel").classList.contains("hidden")) {
-    loadAllUsers();
-  }
-}
-
-function formatApprovalTime(value) {
-  if (!value) return "申请时间未知";
-  const date = new Date(value.endsWith("Z") ? value : `${value}Z`);
-  if (Number.isNaN(date.getTime())) return "申请时间未知";
-  return date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-async function loadAllUsers() {
-  const el = document.getElementById("admin-content");
-  el.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">加载中...</p>';
-  try {
-    const [userResp, metricResp] = await Promise.all([
-      fetch("/api/admin/all-users"),
-      fetch("/api/admin/metrics"),
-    ]);
-    const data = await userResp.json();
-    const metrics = metricResp.ok ? await metricResp.json() : null;
-    if (!data.users || !data.users.length) {
-      el.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">暂无用户</p>';
-      return;
-    }
-    let html = renderAdminMetrics(metrics);
-    html += '<div class="admin-subtitle">用户管理</div><div class="admin-user-list">';
-    for (const u of data.users) {
-      const approved = u.is_admin ? '<span class="badge badge-admin">管理员</span>' :
-        (u.has_llm_api_key ? '<span class="badge badge-low">个人 API</span>' :
-        (u.is_approved ? '<span class="badge badge-low">不限次数</span>' :
-        `<span class="badge ${u.free_api_remaining > 0 ? 'badge-medium' : 'badge-high'}">免费 ${u.free_api_remaining}/${u.free_api_limit}</span>`));
-      const modelVal = u.llm_model || 'deepseek-v4-pro';
-      const approvalTime = u.approval_requested || u.is_approved
-        ? `<span class="admin-request-time">申请时间：${formatApprovalTime(u.approval_requested_at)}</span>`
-        : '';
-      html += `<div class="admin-user-row">
-        <div class="admin-user-info">
-          <span class="admin-user-name">${escapeHtml(u.username)}</span>
-          ${approved}
-          ${approvalTime}
-        </div>
-        <div class="admin-user-model">
-          <select class="model-input" id="model-${u.id}" ${u.is_admin ? 'disabled' : ''}>
-            <option value="deepseek-v4-pro" ${modelVal === 'deepseek-v4-pro' ? 'selected' : ''}>deepseek-v4-pro</option>
-            <option value="deepseek-v4-flash" ${modelVal === 'deepseek-v4-flash' ? 'selected' : ''}>deepseek-v4-flash</option>
-          </select>
-          <button class="btn-save-model" onclick="setUserModel(${u.id})" ${u.is_admin ? 'disabled' : ''}>保存</button>
-        </div>
-        <div class="admin-user-actions">
-          ${!u.is_admin && u.approval_requested && !u.is_approved ? `<button class="btn-approve" onclick="approveUser(${u.id})">通过</button><button class="btn-reject" onclick="rejectUser(${u.id})">驳回</button>` : ''}
-          ${!u.is_admin ? `<button class="btn-delete-user" onclick="deleteUser(${u.id})">删除</button>` : ''}
-          ${!u.is_admin && u.is_approved ? `<button class="btn-reject" onclick="revokeUser(${u.id})">取消使用</button>` : ''}
-        </div>
-      </div>`;
-    }
-    html += "</div>";
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<p style="color:var(--danger);font-size:13px;">加载失败</p>';
-  }
-}
-
-async function setUserModel(userId) {
-  const input = document.getElementById(`model-${userId}`);
-  const val = input.value.trim();
-  try {
-    const resp = await fetch(`/api/admin/set-model/${userId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ llm_model: val }),
-    });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      input.style.borderColor = "var(--success)";
-      setTimeout(() => { input.style.borderColor = ""; }, 1500);
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-async function approveUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/approve/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-async function rejectUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/reject/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-function renderAdminMetrics(metrics) {
-  if (!metrics) return "";
-  const moduleLabels = {
-    analyze: "文书分析",
-    search: "法规检索",
-    review: "合同审查",
-    generate: "文书生成",
-    strategy: "策略分析",
-    student_legal: "学生法律",
-  };
-  const modules = Object.entries(metrics.usage.by_module || {})
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([name, count]) => `<span>${escapeHtml(moduleLabels[name] || name)} ${count}</span>`)
-    .join("");
-  return `<div class="admin-metrics">
-    <div class="admin-metric"><strong>${metrics.users.total}</strong><span>用户总数</span></div>
-    <div class="admin-metric"><strong>${metrics.users.quota_exhausted || 0}</strong><span>额度已用完</span></div>
-    <div class="admin-metric"><strong>${metrics.users.personal_api}</strong><span>自配 API</span></div>
-    <div class="admin-metric"><strong>${metrics.usage.today}</strong><span>今日调用</span></div>
-    <div class="admin-metric"><strong>${metrics.usage.last_7_days}</strong><span>近7日调用</span></div>
-    <div class="admin-module-rank">${modules || "<span>暂无调用</span>"}</div>
-  </div>`;
-}
-
-async function deleteUser(userId) {
-  if (!confirm("确定删除该用户吗？该操作会同时删除他的历史记录。")) return;
-  try {
-    const resp = await fetch(`/api/admin/delete-user/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-
-async function revokeUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/revoke/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
 }
 
 // ===== User-controlled AI memory =====

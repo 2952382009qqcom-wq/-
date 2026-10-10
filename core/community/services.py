@@ -10,6 +10,8 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from core.cases.models import LegalCase
 from core.cases.matching import find_context_cases
 from core.models import Conversation, ConversationMessage, db
+from core.moderation.models import PendingReview
+from core.moderation.words import decide, describe_hits, scan_text, top_severity
 from core.privacy import RedactionSession, public_redaction_summary
 from core.recommendations.events import record_event
 from core.search.indexing import enqueue_index, process_outbox
@@ -35,6 +37,16 @@ def clean_public_text(value, *, max_length, field_name):
         raise ValueError(f"{field_name}不能超过{max_length}字")
     session = RedactionSession()
     return session.redact(value), public_redaction_summary(session)
+
+
+def _screen_banned_words(text):
+    """违禁词分级筛查。返回 (action, hits, reason, warnings)。
+
+    action: ok 无命中 / reject 直接拒绝 / review 转人工审核 / warn 提示但放行。
+    """
+    action, hits = decide(scan_text(text))
+    warnings = [hit["word"] for hit in hits]
+    return action, hits, describe_hits(hits), warnings
 
 
 def category_or_error(value):
@@ -77,6 +89,10 @@ def create_post(user_id, data):
     post_type = data.get("post_type", "discussion")
     if post_type not in {"discussion", "legal_help"}:
         raise ValueError("帖子类型无效")
+    action, hits, reason, warnings = _screen_banned_words(f"{title}\n{body}")
+    if action == "reject":
+        raise ValueError("内容包含违禁信息，已拒绝发布：" + "、".join(warnings))
+    review_state = "pending" if action == "review" else "approved"
     post = CommunityPost(
         author_id=user_id,
         category_id=category.id,
@@ -85,9 +101,25 @@ def create_post(user_id, data):
         body=body,
         is_anonymous=bool(data.get("is_anonymous")),
         help_status="open",
+        status="hidden" if review_state == "pending" else "published",
     )
     db.session.add(post)
     db.session.flush()
+    if review_state == "pending":
+        db.session.add(PendingReview(
+            target_type="post",
+            target_id=str(post.id),
+            severity=top_severity(hits),
+            reason=reason,
+            status="pending",
+        ))
+        db.session.add(Notification(
+            user_id=user_id,
+            notification_type="moderation",
+            target_type="post",
+            target_id=str(post.id),
+            summary="你的帖子包含敏感词，已提交人工审核",
+        ))
 
     draft_token = str(data.get("draft_token") or "")
     if draft_token:
@@ -115,7 +147,11 @@ def create_post(user_id, data):
     })
     db.session.commit()
     process_outbox(limit=10)
-    return post, {"masked_count": title_meta.get("masked_count", 0) + body_meta.get("masked_count", 0)}
+    return post, {
+        "masked_count": title_meta.get("masked_count", 0) + body_meta.get("masked_count", 0),
+        "review_state": review_state,
+        "warnings": warnings,
+    }
 
 
 def create_comment(user_id, post, data):
@@ -128,26 +164,40 @@ def create_comment(user_id, post, data):
             raise ValueError("回复的评论不存在")
         if parent.parent_id:
             parent = CommunityComment.query.get(parent.parent_id)
+    action, hits, reason, warnings = _screen_banned_words(body)
+    if action == "reject":
+        raise ValueError("内容包含违禁信息，已拒绝发布：" + "、".join(warnings))
+    review_state = "pending" if action == "review" else "approved"
     comment = CommunityComment(
         post_id=post.id,
         author_id=user_id,
         parent_id=parent.id if parent else None,
         reply_to_user_id=parent.author_id if parent else None,
         body=body,
+        status="hidden" if review_state == "pending" else "published",
     )
-    post.comment_count += 1
     db.session.add(comment)
     db.session.flush()
-    recipient = parent.author_id if parent else post.author_id
-    if recipient and recipient != user_id:
-        db.session.add(Notification(
-            user_id=recipient,
-            actor_id=user_id,
-            notification_type="reply" if parent else "comment",
-            target_type="post",
-            target_id=str(post.id),
-            summary=f"你的帖子《{post.title[:48]}》有了新回复",
+    if review_state == "pending":
+        db.session.add(PendingReview(
+            target_type="comment",
+            target_id=str(comment.id),
+            severity=top_severity(hits),
+            reason=reason,
+            status="pending",
         ))
+    else:
+        post.comment_count += 1
+        recipient = parent.author_id if parent else post.author_id
+        if recipient and recipient != user_id:
+            db.session.add(Notification(
+                user_id=recipient,
+                actor_id=user_id,
+                notification_type="reply" if parent else "comment",
+                target_type="post",
+                target_id=str(post.id),
+                summary=f"你的帖子《{post.title[:48]}》有了新回复",
+            ))
     record_event(
         user_id,
         "comment",
@@ -157,7 +207,7 @@ def create_comment(user_id, post, data):
         commit=False,
     )
     db.session.commit()
-    return comment
+    return comment, {"review_state": review_state, "warnings": warnings}
 
 
 def _draft_serializer():

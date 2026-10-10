@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from core.models import db, User, AnalysisRecord
+from core.moderation.audit import log_admin_action
 from datetime import datetime, timedelta
 import os
 from sqlalchemy import func
@@ -29,6 +30,7 @@ def user_info(user):
         'username': user.username,
         'is_admin': user.is_admin,
         'is_approved': user.is_approved,
+        'is_test_account': bool(getattr(user, 'is_test_account', False)),
         'approval_requested': user.approval_requested,
         'approval_requested_at': user.approval_requested_at.isoformat() if user.approval_requested_at else '',
         'llm_model': user.llm_model or '',
@@ -152,6 +154,7 @@ def approve_user(user_id):
         return jsonify({'error': '用户不存在'}), 404
     user.is_approved = True
     user.approval_requested = False
+    log_admin_action('user_approve', target_type='user', target_id=str(user.id), detail=f'通过 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'用户 {user.username} 已通过审核'})
 
@@ -164,6 +167,7 @@ def reject_user(user_id):
     if not user:
         return jsonify({'error': '用户不存在'}), 404
     user.approval_requested = False
+    log_admin_action('user_reject', target_type='user', target_id=str(user.id), detail=f'驳回 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已驳回用户 {user.username} 的申请'})
 
@@ -288,6 +292,7 @@ def delete_user(user_id):
         column = "reporter_id" if model is CommunityReport else "user_id"
         model.query.filter_by(**{column: user.id}).delete(synchronize_session=False)
     AnalysisRecord.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    log_admin_action('user_delete', target_type='user', target_id=str(user.id), detail=f'删除 {user.username}')
     db.session.delete(user)
     db.session.commit()
     storage = LocalAttachmentStorage()
@@ -313,6 +318,7 @@ def set_user_model(user_id):
     if llm_model is None:
         return jsonify({'error': '模型名称必须是文本'}), 400
     user.llm_model = llm_model or None
+    log_admin_action('user_set_model', target_type='user', target_id=str(user.id), detail=f'{user.username} → {llm_model or "默认"}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已更新用户 {user.username} 的模型'})
 
@@ -330,6 +336,7 @@ def revoke_user(user_id):
     user.is_approved = False
     user.approval_requested = False
     user.llm_model = None
+    log_admin_action('user_revoke', target_type='user', target_id=str(user.id), detail=f'撤销 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已取消用户 {user.username} 的使用权限'})
 

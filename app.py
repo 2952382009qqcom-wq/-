@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context, redirect
 from flask_cors import CORS
 from flask_login import LoginManager, login_required, current_user
 from fpdf import FPDF
@@ -44,10 +44,12 @@ from core.cases.routes import cases_bp
 from core.chat.routes import chat_bp
 from core.notifications.routes import notifications_bp
 from core.memory.routes import memory_bp
+from core.admin.routes import admin_bp
 from core.cases.seed import seed_reference_data
 from core.recommendations.events import record_event
 from core.taxonomy import infer_legal_domain
 from core.legal_guidance import legal_anchors_for_question, requires_legal_basis
+from core.result_normalization import normalize_module_result
 # Import model modules before db.create_all so every new table is registered.
 from core.community import models as _community_models  # noqa: F401
 from core.cases import models as _case_models  # noqa: F401
@@ -55,6 +57,7 @@ from core.chat import models as _chat_models  # noqa: F401
 from core.recommendations import models as _recommendation_models  # noqa: F401
 from core.notifications import models as _notification_models  # noqa: F401
 from core.memory import models as _memory_models  # noqa: F401
+from core.moderation import models as _moderation_models  # noqa: F401
 from core.memory.services import build_memory_context
 from core.conversation import (
     ConversationNotFound,
@@ -152,6 +155,7 @@ app.register_blueprint(cases_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(notifications_bp)
 app.register_blueprint(memory_bp)
+app.register_blueprint(admin_bp)
 # Event decorators are registered as a side effect of this import.
 from core.chat import socket_events as _chat_socket_events  # noqa: E402,F401
 
@@ -188,6 +192,42 @@ def ensure_user_schema():
         db.session.execute(text("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(255)"))
     if "free_api_used" not in columns:
         db.session.execute(text("ALTER TABLE users ADD COLUMN free_api_used INTEGER NOT NULL DEFAULT 0"))
+    if "is_test_account" not in columns:
+        db.session.execute(text("ALTER TABLE users ADD COLUMN is_test_account BOOLEAN NOT NULL DEFAULT 0"))
+    db.session.commit()
+
+
+def ensure_moderation_schema():
+    inspector = inspect(db.engine)
+    columns = {column["name"] for column in inspector.get_columns("community_reports")}
+    if "resolved_by" not in columns:
+        db.session.execute(text("ALTER TABLE community_reports ADD COLUMN resolved_by INTEGER"))
+    db.session.commit()
+
+
+TEST_ACCOUNT_USERNAME = os.getenv("TEST_ACCOUNT_USERNAME", "mj123")
+TEST_ACCOUNT_PASSWORD = os.getenv("TEST_ACCOUNT_PASSWORD", "123456")
+TEST_ACCOUNT_MODEL = os.getenv("TEST_ACCOUNT_MODEL", "deepseek-v4-flash")
+TEST_ACCOUNT_BASE_URL = os.getenv("TEST_ACCOUNT_BASE_URL", "https://api.deepseek.com/v1")
+TEST_ACCOUNT_API_KEY = os.getenv("TEST_ACCOUNT_API_KEY", "")
+
+
+def ensure_test_account():
+    """Maintain the shared demo account: pre-approved, model-bound, quota label hidden."""
+    user = User.query.filter_by(username=TEST_ACCOUNT_USERNAME).first()
+    if user is None:
+        user = User(
+            username=TEST_ACCOUNT_USERNAME,
+            password_hash=generate_password_hash(TEST_ACCOUNT_PASSWORD),
+            free_api_used=0,
+        )
+        db.session.add(user)
+    user.is_approved = True
+    user.is_test_account = True
+    user.llm_model = TEST_ACCOUNT_MODEL
+    user.llm_base_url = TEST_ACCOUNT_BASE_URL
+    if TEST_ACCOUNT_API_KEY:
+        user.llm_api_key = TEST_ACCOUNT_API_KEY
     db.session.commit()
 
 
@@ -196,8 +236,11 @@ def ensure_application_schema():
     with app.app_context():
         db.create_all()
         ensure_user_schema()
+        ensure_moderation_schema()
         if os.getenv("AUTO_SEED_REFERENCE_DATA", "1").strip().lower() not in {"0", "false", "no"}:
             seed_reference_data()
+        if os.getenv("AUTO_SEED_TEST_ACCOUNT", "1").strip().lower() not in {"0", "false", "no"}:
+            ensure_test_account()
 
 
 if os.getenv("AUTO_INIT_DB", "1").strip().lower() not in {"0", "false", "no"}:
@@ -240,6 +283,9 @@ def _prepare_document_for_model(text, max_chars, parsed=None, filename=""):
 
 
 def _attach_processing_meta(result, privacy_meta, document_meta, final_stage="analyze"):
+    normalized = normalize_module_result(result, final_stage)
+    result.clear()
+    result.update(normalized)
     result["privacy_meta"] = privacy_meta
     result["document_meta"] = document_meta
     result["pipeline_trace"] = [
@@ -395,8 +441,16 @@ def save_record(module_type, input_text, result):
 # ===== 首页 =====
 @app.route("/")
 def index():
-    """渲染主页面"""
+    """渲染主页面；管理员账号已剥离到独立控制台。"""
+    if current_user.is_authenticated and current_user.is_admin:
+        return redirect("/admin")
     return render_template("index.html")
+
+
+@app.route("/admin")
+def admin_console():
+    """管理员独立控制台入口。"""
+    return render_template("admin.html")
 
 
 # ===== 演示数据生成（无 API Key 时自动启用） =====
