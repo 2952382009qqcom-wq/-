@@ -5,6 +5,7 @@ from core.models import db, User, AnalysisRecord
 from datetime import datetime, timedelta
 import os
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -24,6 +25,7 @@ def free_api_limit():
 def user_info(user):
     limit = free_api_limit()
     used = max(0, int(user.free_api_used or 0))
+    unlimited = bool(user.is_approved or user.is_admin or user.llm_api_key)
     return {
         'id': user.id,
         'username': user.username,
@@ -34,9 +36,12 @@ def user_info(user):
         'llm_model': user.llm_model or '',
         'llm_base_url': user.llm_base_url or '',
         'has_llm_api_key': bool(user.llm_api_key),
+        'role': 'admin' if user.is_admin else 'user',
+        'ai_unlimited': unlimited,
+        'quota_mode': 'unlimited' if unlimited else 'trial',
         'free_api_limit': limit,
         'free_api_used': used,
-        'free_api_remaining': max(0, limit - used),
+        'free_api_remaining': None if unlimited else max(0, limit - used),
     }
 
 
@@ -59,6 +64,7 @@ def register():
     user = User(
         username=username,
         password_hash=generate_password_hash(password),
+        is_admin=False,
         is_approved=False,
         approval_requested=False,
         free_api_used=0,
@@ -82,6 +88,28 @@ def login():
     user = User.query.filter_by(username=username).first()
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'error': '用户名或密码错误'}), 401
+
+    if user.is_admin:
+        return jsonify({'error': '请从管理员入口登录', 'code': 'ADMIN_LOGIN_REQUIRED'}), 403
+
+    login_user(user)
+    return jsonify({'status': 'ok', 'user': user_info(user)})
+
+
+@auth_bp.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    data = request.get_json(silent=True) or {}
+    username = _text_field(data, 'username')
+    password = _text_field(data, 'password')
+
+    if username is None or password is None:
+        return jsonify({'error': '用户名和密码必须是文本'}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({'error': '用户名或密码错误'}), 401
+    if not user.is_admin:
+        return jsonify({'error': '该账号没有管理员权限', 'code': 'ADMIN_ACCOUNT_REQUIRED'}), 403
 
     login_user(user)
     return jsonify({'status': 'ok', 'user': user_info(user)})
@@ -128,6 +156,82 @@ def admin_required(f):
     return decorated
 
 
+@auth_bp.route('/api/admin/profile', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def admin_profile():
+    if request.method == 'GET':
+        return jsonify({'user': user_info(current_user)})
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': '请求内容必须是对象'}), 400
+    if any(key in data for key in ('is_admin', 'role', 'is_approved')):
+        return jsonify({'error': '账号角色和使用权限不可在资料页修改'}), 400
+
+    current_password = _text_field(data, 'current_password')
+    username = _text_field(data, 'username')
+    password = _text_field(data, 'password')
+    if current_password is None or username is None or password is None:
+        return jsonify({'error': '用户名和密码必须是文本'}), 400
+    if not current_password:
+        return jsonify({'error': '请提供当前密码'}), 400
+    if not check_password_hash(current_user.password_hash, current_password):
+        return jsonify({'error': '当前密码错误', 'code': 'CURRENT_PASSWORD_INCORRECT'}), 401
+    if username and (len(username) < 3 or len(username) > 80):
+        return jsonify({'error': '用户名需为3至80个字符'}), 400
+    if password and len(password) < 12:
+        return jsonify({'error': '管理员密码至少12个字符'}), 400
+    if username and User.query.filter(User.username == username, User.id != current_user.id).first():
+        return jsonify({'error': '用户名已存在'}), 409
+
+    # All checks precede mutation, and this endpoint only edits the signed-in
+    # administrator's credentials. User ids and role fields are never assigned.
+    if username:
+        current_user.username = username
+    if password:
+        current_user.password_hash = generate_password_hash(password)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': '用户名已存在'}), 409
+    return jsonify({'status': 'ok', 'user': user_info(current_user)})
+
+
+@auth_bp.route('/api/admin/test-users', methods=['POST'])
+@login_required
+@admin_required
+def create_test_user():
+    data = request.get_json(silent=True) or {}
+    username = _text_field(data, 'username')
+    password = _text_field(data, 'password')
+    if username is None or password is None:
+        return jsonify({'error': '用户名和密码必须是文本'}), 400
+    if not username or len(username) < 3 or len(username) > 80:
+        return jsonify({'error': '用户名需为3至80个字符'}), 400
+    if not password or len(password) < 12:
+        return jsonify({'error': '测试账号密码至少12个字符'}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': '用户名已存在，请为测试账号使用独立用户名'}), 409
+
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        is_admin=False,
+        is_approved=True,
+        approval_requested=False,
+        free_api_used=0,
+    )
+    db.session.add(user)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({'error': '用户名已存在，请为测试账号使用独立用户名'}), 409
+    return jsonify({'status': 'ok', 'user': user_info(user)}), 201
+
+
 @auth_bp.route('/api/admin/pending-users', methods=['GET'])
 @login_required
 @admin_required
@@ -150,6 +254,8 @@ def approve_user(user_id):
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': '用户不存在'}), 404
+    if user.is_admin:
+        return jsonify({'error': '管理员账号不能通过普通用户审核接口修改'}), 400
     user.is_approved = True
     user.approval_requested = False
     db.session.commit()
@@ -163,6 +269,8 @@ def reject_user(user_id):
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': '用户不存在'}), 404
+    if user.is_admin:
+        return jsonify({'error': '管理员账号不能通过普通用户审核接口修改'}), 400
     user.approval_requested = False
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已驳回用户 {user.username} 的申请'})
@@ -308,6 +416,8 @@ def set_user_model(user_id):
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': '用户不存在'}), 404
+    if user.is_admin:
+        return jsonify({'error': '管理员账号不能通过普通用户模型接口修改'}), 400
     data = request.get_json(silent=True) or {}
     llm_model = _text_field(data, 'llm_model')
     if llm_model is None:
@@ -340,7 +450,8 @@ def revoke_user(user_id):
 def list_all_users():
     users = User.query.order_by(User.created_at.desc()).all()
     return jsonify({
-        'users': [user_info(u) for u in users],
+        'users': [user_info(u) for u in users if not u.is_admin],
+        'administrators': [user_info(u) for u in users if u.is_admin],
     })
 
 
@@ -365,7 +476,8 @@ def admin_metrics():
 
     return jsonify({
         'users': {
-            'total': User.query.count(),
+            'total': User.query.filter_by(is_admin=False).count(),
+            'administrator_count': User.query.filter_by(is_admin=True).count(),
             'approved': User.query.filter_by(is_approved=True, is_admin=False).count(),
             'pending': User.query.filter_by(approval_requested=True, is_approved=False, is_admin=False).count(),
             'personal_api': User.query.filter(User.llm_api_key.isnot(None), User.is_admin == False).count(),

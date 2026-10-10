@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context, redirect
 from flask_cors import CORS
 from flask_login import LoginManager, login_required, current_user
 from fpdf import FPDF
@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 from werkzeug.security import generate_password_hash
 from sqlalchemy import inspect, text
+from dotenv import set_key
 
 from core.llm_client import call_llm_json, call_llm_stream_json, update_config, is_demo_mode, test_llm_connection
 from core.prompts import (
@@ -85,7 +86,8 @@ from core.legal_agent import (
     missing_document_fields,
     suggested_follow_ups,
 )
-from core.auth import auth_bp
+from core.auth import auth_bp, admin_required
+from core.model_settings import DEFAULT_BASE_URL, DEFAULT_MODEL, normalize_provider_url, validate_model_name
 
 app = Flask(__name__)
 cors_origins = [
@@ -314,7 +316,7 @@ def require_approved(f):
 
         if reservation.rowcount != 1:
             return jsonify({
-                "error": "10 次免费 AI 调用额度已用完，请在 API 设置中配置自己的 API Key。",
+                "error": f"{limit} 次免费 AI 调用额度已用完，请配置自己的 API Key 或申请使用权限。",
                 "code": "FREE_API_QUOTA_EXHAUSTED",
                 "free_api_limit": limit,
                 "free_api_remaining": 0,
@@ -396,7 +398,15 @@ def save_record(module_type, input_text, result):
 @app.route("/")
 def index():
     """渲染主页面"""
+    if current_user.is_authenticated and current_user.is_admin:
+        return redirect("/admin")
     return render_template("index.html")
+
+
+@app.route("/admin")
+def admin_portal():
+    """Separate administrator shell; account data remains behind protected APIs."""
+    return render_template("admin.html")
 
 
 # ===== 演示数据生成（无 API Key 时自动启用） =====
@@ -1424,15 +1434,13 @@ def _get_model_override():
 
 def _get_llm_config():
     """获取当前用户的个人 LLM 配置；未配置时回退全局配置。"""
-    if current_user.is_authenticated:
-        config = {}
-        if current_user.llm_api_key:
-            config["api_key"] = current_user.llm_api_key
-        if current_user.llm_base_url:
-            config["base_url"] = current_user.llm_base_url
-        if current_user.llm_model:
-            config["model"] = current_user.llm_model
-        return config
+    if current_user.is_authenticated and current_user.llm_api_key:
+        return {
+            "api_key": current_user.llm_api_key,
+            "base_url": current_user.llm_base_url or DEFAULT_BASE_URL,
+            "model": current_user.llm_model or DEFAULT_MODEL,
+        }
+    # Legacy personal URL/model values must never redirect the shared API key.
     return {}
 
 
@@ -2882,86 +2890,130 @@ def get_templates():
 @app.route("/api/config", methods=["POST"])
 @login_required
 def set_config():
-    """运行时更新 LLM 配置。管理员同步写全局配置，普通用户保存个人配置。"""
+    """Ordinary accounts can change only their own, explicitly keyed provider."""
+    if current_user.is_admin:
+        return jsonify({"error": "请在独立管理页配置共享模型", "code": "ADMIN_CONFIG_REQUIRED"}), 403
     data = request.get_json(silent=True) or {}
-    api_key = _text_field(data, "api_key")
-    base_url = _text_field(data, "base_url")
-    model = _text_field(data, "model")
-    if None in (api_key, base_url, model):
-        return jsonify({"error": "API 配置字段必须是文本"}), 400
-    if any("\n" in value or "\r" in value for value in (api_key, base_url, model)):
-        return jsonify({"error": "API 配置字段不能包含换行符"}), 400
-    if base_url and not base_url.startswith(("https://", "http://")):
-        return jsonify({"error": "Base URL 必须使用 http:// 或 https://"}), 400
-
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-
-    def _update_env(key, value):
-        if not value:
-            return
-        os.environ[key] = value
-        # 读取现有 .env，更新或追加 key=value
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            lines = []
-        found = False
-        for i, line in enumerate(lines):
-            if line.strip().startswith(f"{key}=") or line.strip().startswith(f"# {key}"):
-                lines[i] = f"{key}={value}\n"
-                found = True
-                break
-        if not found:
-            lines.append(f"\n{key}={value}\n")
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
-    if api_key:
-        current_user.llm_api_key = api_key
-    if base_url:
-        current_user.llm_base_url = base_url
-    if model:
-        current_user.llm_model = model
+    try:
+        api_key, base_url, model = _validate_model_settings(
+            data, current_user.llm_api_key or "", current_user.llm_base_url or "", current_user.llm_model or "")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if not api_key:
+        return jsonify({"error": "个人配置需提供自己的 API Key；不能修改共享模型地址"}), 400
+    current_user.llm_api_key = api_key
+    current_user.llm_base_url = base_url
+    current_user.llm_model = model
     db.session.commit()
-
-    if current_user.is_admin and api_key:
-        _update_env("LLM_API_KEY", api_key)
-        update_config(api_key=api_key)
-    if current_user.is_admin and base_url:
-        _update_env("LLM_BASE_URL", base_url)
-        update_config(base_url=base_url)
-    if current_user.is_admin and model:
-        _update_env("LLM_MODEL", model)
-        update_config(model=model)
-
-    return jsonify({"status": "ok", "message": "配置已保存"})
+    return jsonify({"status": "ok", "message": "个人配置已保存，共享配置未改变"})
 
 
 @app.route("/api/config", methods=["GET"])
 @login_required
 def get_config():
     """读取当前用户可见的 LLM 配置。API Key 只返回是否已设置。"""
+    if current_user.is_admin:
+        return jsonify({"error": "请使用独立管理页的模型配置", "code": "ADMIN_CONFIG_REQUIRED"}), 403
+    personal = bool(current_user.llm_api_key)
     return jsonify({
-        "base_url": current_user.llm_base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1"),
-        "model": current_user.llm_model or os.getenv("LLM_MODEL", "deepseek-v4-pro"),
-        "has_api_key": bool(current_user.llm_api_key),
+        "base_url": (current_user.llm_base_url or DEFAULT_BASE_URL) if personal else os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL,
+        "model": (current_user.llm_model or DEFAULT_MODEL) if personal else os.getenv("LLM_MODEL") or DEFAULT_MODEL,
+        "has_api_key": personal,
+        "scope": "personal" if personal else "shared",
     })
 
 
 @app.route("/api/config/test", methods=["POST"])
 @login_required
 def test_config():
-    """测试当前填写或已保存的 OpenAI 兼容配置。"""
+    """Test only a user's own key, never a shared key at a user-supplied URL."""
+    if current_user.is_admin:
+        return jsonify({"error": "请在独立管理页测试共享模型"}), 403
     data = request.get_json(silent=True) or {}
-    api_key_input = _text_field(data, "api_key")
-    base_url_input = _text_field(data, "base_url")
-    model_input = _text_field(data, "model")
-    if None in (api_key_input, base_url_input, model_input):
-        return jsonify({"error": "API 配置字段必须是文本"}), 400
-    api_key = api_key_input or current_user.llm_api_key or ""
-    base_url = base_url_input or current_user.llm_base_url or os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = model_input or current_user.llm_model or os.getenv("LLM_MODEL", "deepseek-v4-pro")
+    try:
+        api_key, base_url, model = _validate_model_settings(
+            data, current_user.llm_api_key or "", current_user.llm_base_url or "", current_user.llm_model or "")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if not api_key:
+        return jsonify({"error": "请提供自己的 API Key；测试账号使用共享服务无需个人配置"}), 400
+    ok, message = test_llm_connection(api_key, base_url, model)
+    return jsonify({"status": "ok" if ok else "error", "message": message}), (200 if ok else 400)
+
+
+def _validate_model_settings(data, saved_key="", saved_url="", saved_model=""):
+    if not isinstance(data, dict):
+        raise ValueError("API 配置必须是对象")
+    fields = [_text_field(data, field) for field in ("api_key", "base_url", "model")]
+    if None in fields:
+        raise ValueError("API 配置字段必须是文本")
+    key, url, model = fields
+    if len(key) > 512 or any(ch in key for ch in ("\r", "\n", "\x00")):
+        raise ValueError("API Key 格式无效")
+    return (key or saved_key, normalize_provider_url(url or saved_url or DEFAULT_BASE_URL),
+            validate_model_name(model or saved_model or DEFAULT_MODEL))
+
+
+def _persist_shared_model_settings(settings):
+    """Atomically retain unrelated deployment settings; only the admin API calls this."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    env_path = Path(app.config.get("MODEL_CONFIG_ENV_PATH") or Path(__file__).parent / ".env")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".model-config-", dir=env_path.parent)
+    os.close(fd)
+    try:
+        if env_path.exists():
+            shutil.copyfile(env_path, temporary)
+        for name, value in settings.items():
+            set_key(temporary, name, value, quote_mode="always")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, env_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@app.route("/api/admin/model-config", methods=["GET", "POST"])
+@login_required
+@admin_required
+def admin_model_config():
+    if request.method == "GET":
+        return jsonify({
+            "base_url": os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL,
+            "model": os.getenv("LLM_MODEL") or DEFAULT_MODEL,
+            "has_api_key": bool(os.getenv("LLM_API_KEY")) and not is_demo_mode(),
+            "scope": "shared",
+        })
+    data = request.get_json(silent=True) or {}
+    try:
+        api_key, base_url, model = _validate_model_settings(
+            data, os.getenv("LLM_API_KEY", ""), os.getenv("LLM_BASE_URL", ""), os.getenv("LLM_MODEL", ""))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    settings = {"LLM_API_KEY": api_key, "LLM_BASE_URL": base_url, "LLM_MODEL": model}
+    try:
+        _persist_shared_model_settings(settings)
+    except OSError:
+        app.logger.error("Could not persist administrator model settings")
+        return jsonify({"error": "配置文件不可写，原运行配置未改变"}), 503
+    update_config(api_key=api_key, base_url=base_url, model=model)
+    os.environ.update(settings)
+    return jsonify({"status": "ok", "message": "共享模型配置已保存，空密钥字段保留原密钥"})
+
+
+@app.route("/api/admin/model-config/test", methods=["POST"])
+@login_required
+@admin_required
+def admin_model_config_test():
+    data = request.get_json(silent=True) or {}
+    try:
+        api_key, base_url, model = _validate_model_settings(
+            data, os.getenv("LLM_API_KEY", ""), os.getenv("LLM_BASE_URL", ""), os.getenv("LLM_MODEL", ""))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     ok, message = test_llm_connection(api_key, base_url, model)
     return jsonify({"status": "ok" if ok else "error", "message": message}), (200 if ok else 400)
 
@@ -3449,36 +3501,34 @@ def server_error(e):
     return jsonify({"error": "服务器内部错误，请稍后重试"}), 500
 
 
+def ensure_initial_administrator():
+    """Create only the first admin. Existing identities/passwords are untouched."""
+    existing = User.query.filter_by(is_admin=True).first()
+    if existing is not None:
+        return existing, False
+    admin_user = os.getenv("ADMIN_USERNAME", "admin")
+    admin_pw = os.getenv("ADMIN_PASSWORD")
+    if not isinstance(admin_user, str) or not 3 <= len(admin_user.strip()) <= 80:
+        raise RuntimeError("ADMIN_USERNAME 需为3至80个字符")
+    admin_user = admin_user.strip()
+    if User.query.filter_by(username=admin_user).first():
+        raise RuntimeError("管理员用户名已被普通账号使用，请配置独立的 ADMIN_USERNAME")
+    if not admin_pw or len(admin_pw) < 12:
+        raise RuntimeError("首次启动需设置至少12位 ADMIN_PASSWORD，或使用本地演示启动脚本")
+    administrator = User(username=admin_user, password_hash=generate_password_hash(admin_pw),
+                         is_admin=True, is_approved=True)
+    db.session.add(administrator)
+    db.session.commit()
+    return administrator, True
+
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
         ensure_user_schema()
-        admin_user = os.getenv("ADMIN_USERNAME", "admin")
-        admin_pw = os.getenv("ADMIN_PASSWORD")
-        u = User.query.filter_by(username=admin_user).first()
-        if not u:
-            generated_admin_pw = None
-            if not admin_pw:
-                generated_admin_pw = secrets.token_urlsafe(18)
-                admin_pw = generated_admin_pw
-            u = User(
-                username=admin_user,
-                password_hash=generate_password_hash(admin_pw),
-                is_admin=True,
-                is_approved=True,
-            )
-            db.session.add(u)
-            db.session.commit()
-            print(f"管理员账号已创建: {admin_user}")
-            if generated_admin_pw:
-                print(f"临时管理员密码: {generated_admin_pw}")
-                print("请立即登录后修改密码，或在 .env 中设置 ADMIN_PASSWORD。")
-        else:
-            u.is_admin = True
-            u.is_approved = True
-            if admin_pw:
-                u.password_hash = generate_password_hash(admin_pw)
-            db.session.commit()
+        administrator, created = ensure_initial_administrator()
+        if created:
+            print(f"管理员账号已创建: {administrator.username}")
     print("=" * 60)
     print("  明鉴 - 基于大模型的法律文书智能助手")
     print("  访问地址: http://localhost:5000")

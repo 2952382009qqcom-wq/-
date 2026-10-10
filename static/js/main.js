@@ -649,7 +649,7 @@ function updateWorkspaceQuota() {
   const el = document.getElementById("workspace-quota");
   const u = window._user;
   if (!el || !u) return;
-  if (u.is_admin || u.is_approved || u.has_llm_api_key) {
+  if (u.is_admin || hasUnlimitedAi(u) || u.has_llm_api_key) {
     el.textContent = "不限";
   } else {
     const remaining = Number.isFinite(Number(u.free_api_remaining)) ? Number(u.free_api_remaining) : 10;
@@ -2889,6 +2889,7 @@ async function testConfig() {
 function updateStatusBadge(isDemo) {
   const pulse = document.getElementById("status-pulse");
   const label = document.getElementById("api-status-label");
+  if (!pulse || !label) return;
   if (isDemo) {
     pulse.classList.remove("live");
     label.textContent = "演示模式";
@@ -2930,27 +2931,25 @@ function switchAuth(type) {
 }
 
 function applyUserUI(u) {
+  if (!u) return;
+  if (u.is_admin || u.role === "admin") {
+    window.location.replace("/admin");
+    return;
+  }
   document.getElementById("header-username").textContent = u.username;
   document.getElementById("header-user").classList.remove("hidden");
   window._user = u;
   const workspaceName = document.getElementById("workspace-username");
   if (workspaceName) workspaceName.textContent = u.username;
-
-  // 全部先隐藏
-  document.getElementById("admin-status-group").style.display = "none";
-  document.getElementById("btn-admin-panel").style.display = "none";
   document.getElementById("btn-config-gear").style.display = "";
-  document.getElementById("approval-hint").classList.add("hidden");
-
-  if (u.is_admin) {
-    document.getElementById("admin-status-group").style.display = "";
-    document.getElementById("btn-admin-panel").style.display = "";
-    document.getElementById("btn-config-gear").style.display = "";
-  } else {
-    updateQuotaHint();
-  }
+  updateQuotaHint();
   loadAgentConversations();
   if (typeof initMingjianChat === "function") initMingjianChat();
+}
+
+function hasUnlimitedAi(u) {
+  return Boolean(u && (u.ai_unlimited || u.quota_mode === "unlimited" ||
+    u.is_approved || u.free_api_remaining === null || u.remaining === null));
 }
 
 function updateQuotaHint() {
@@ -2958,7 +2957,7 @@ function updateQuotaHint() {
   const hint = document.getElementById("approval-hint");
   const text = document.getElementById("free-quota-text");
 
-  if (!u || u.is_admin) {
+  if (!u || u.is_admin || u.role === "admin") {
     hint.classList.add("hidden");
     return;
   }
@@ -2966,8 +2965,8 @@ function updateQuotaHint() {
   text.classList.remove("quota-exhausted");
   if (u.has_llm_api_key) {
     text.textContent = "个人 API 已启用";
-  } else if (u.is_approved) {
-    text.textContent = "AI 权限已开通";
+  } else if (hasUnlimitedAi(u)) {
+    text.textContent = "AI 不限次数";
   } else {
     const limit = Number.isFinite(Number(u.free_api_limit)) ? Number(u.free_api_limit) : 10;
     const remaining = Number.isFinite(Number(u.free_api_remaining)) ? Number(u.free_api_remaining) : limit;
@@ -3042,8 +3041,6 @@ async function doLogout() {
   if (typeof closeCaseDetail === "function") closeCaseDetail();
   if (typeof closeChatDrawer === "function") closeChatDrawer();
   document.getElementById("header-user").classList.add("hidden");
-  document.getElementById("admin-status-group").style.display = "none";
-  document.getElementById("btn-admin-panel").style.display = "none";
   document.getElementById("btn-config-gear").style.display = "none";
   document.getElementById("approval-hint").classList.add("hidden");
   document.getElementById("history-overlay").classList.add("hidden");
@@ -3058,206 +3055,18 @@ async function doLogout() {
 
 async function initApp() {
   try {
-    const data = await apiGet("/api/status");
-    if (!data.error) {
-      updateStatusBadge(data.demo_mode);
-    }
-  } catch (e) {}
-
-  try {
     const resp = await fetch("/api/auth/status");
     const data = await resp.json();
     if (data.authenticated && data.user) {
-      window._user = data.user;
-      if (data.user.is_admin) {
-        document.getElementById("admin-status-group").style.display = "";
-        document.getElementById("btn-admin-panel").style.display = "";
-        document.getElementById("btn-config-gear").style.display = "";
-      } else {
-        document.getElementById("btn-config-gear").style.display = "";
-        updateQuotaHint();
+      if (data.user.is_admin || data.user.role === "admin") {
+        window.location.replace("/admin");
+        return;
       }
+      window._user = data.user;
+      document.getElementById("btn-config-gear").style.display = "";
+      updateQuotaHint();
     }
   } catch (e) {}
-}
-
-// ===== Admin Panel =====
-function toggleAdminPanel() {
-  document.getElementById("admin-overlay").classList.toggle("hidden");
-  document.getElementById("admin-panel").classList.toggle("hidden");
-  if (!document.getElementById("admin-panel").classList.contains("hidden")) {
-    loadAllUsers();
-  }
-}
-
-function formatApprovalTime(value) {
-  if (!value) return "申请时间未知";
-  const date = new Date(value.endsWith("Z") ? value : `${value}Z`);
-  if (Number.isNaN(date.getTime())) return "申请时间未知";
-  return date.toLocaleString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-async function loadAllUsers() {
-  const el = document.getElementById("admin-content");
-  el.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">加载中...</p>';
-  try {
-    const [userResp, metricResp] = await Promise.all([
-      fetch("/api/admin/all-users"),
-      fetch("/api/admin/metrics"),
-    ]);
-    const data = await userResp.json();
-    const metrics = metricResp.ok ? await metricResp.json() : null;
-    if (!data.users || !data.users.length) {
-      el.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">暂无用户</p>';
-      return;
-    }
-    let html = renderAdminMetrics(metrics);
-    html += '<div class="admin-subtitle">用户管理</div><div class="admin-user-list">';
-    for (const u of data.users) {
-      const approved = u.is_admin ? '<span class="badge badge-admin">管理员</span>' :
-        (u.has_llm_api_key ? '<span class="badge badge-low">个人 API</span>' :
-        (u.is_approved ? '<span class="badge badge-low">不限次数</span>' :
-        `<span class="badge ${u.free_api_remaining > 0 ? 'badge-medium' : 'badge-high'}">免费 ${u.free_api_remaining}/${u.free_api_limit}</span>`));
-      const modelVal = u.llm_model || 'deepseek-v4-pro';
-      const approvalTime = u.approval_requested || u.is_approved
-        ? `<span class="admin-request-time">申请时间：${formatApprovalTime(u.approval_requested_at)}</span>`
-        : '';
-      html += `<div class="admin-user-row">
-        <div class="admin-user-info">
-          <span class="admin-user-name">${escapeHtml(u.username)}</span>
-          ${approved}
-          ${approvalTime}
-        </div>
-        <div class="admin-user-model">
-          <select class="model-input" id="model-${u.id}" ${u.is_admin ? 'disabled' : ''}>
-            <option value="deepseek-v4-pro" ${modelVal === 'deepseek-v4-pro' ? 'selected' : ''}>deepseek-v4-pro</option>
-            <option value="deepseek-v4-flash" ${modelVal === 'deepseek-v4-flash' ? 'selected' : ''}>deepseek-v4-flash</option>
-          </select>
-          <button class="btn-save-model" onclick="setUserModel(${u.id})" ${u.is_admin ? 'disabled' : ''}>保存</button>
-        </div>
-        <div class="admin-user-actions">
-          ${!u.is_admin && u.approval_requested && !u.is_approved ? `<button class="btn-approve" onclick="approveUser(${u.id})">通过</button><button class="btn-reject" onclick="rejectUser(${u.id})">驳回</button>` : ''}
-          ${!u.is_admin ? `<button class="btn-delete-user" onclick="deleteUser(${u.id})">删除</button>` : ''}
-          ${!u.is_admin && u.is_approved ? `<button class="btn-reject" onclick="revokeUser(${u.id})">取消使用</button>` : ''}
-        </div>
-      </div>`;
-    }
-    html += "</div>";
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<p style="color:var(--danger);font-size:13px;">加载失败</p>';
-  }
-}
-
-async function setUserModel(userId) {
-  const input = document.getElementById(`model-${userId}`);
-  const val = input.value.trim();
-  try {
-    const resp = await fetch(`/api/admin/set-model/${userId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ llm_model: val }),
-    });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      input.style.borderColor = "var(--success)";
-      setTimeout(() => { input.style.borderColor = ""; }, 1500);
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-async function approveUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/approve/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-async function rejectUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/reject/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-function renderAdminMetrics(metrics) {
-  if (!metrics) return "";
-  const moduleLabels = {
-    analyze: "文书分析",
-    search: "法规检索",
-    review: "合同审查",
-    generate: "文书生成",
-    strategy: "策略分析",
-    student_legal: "学生法律",
-  };
-  const modules = Object.entries(metrics.usage.by_module || {})
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([name, count]) => `<span>${escapeHtml(moduleLabels[name] || name)} ${count}</span>`)
-    .join("");
-  return `<div class="admin-metrics">
-    <div class="admin-metric"><strong>${metrics.users.total}</strong><span>用户总数</span></div>
-    <div class="admin-metric"><strong>${metrics.users.quota_exhausted || 0}</strong><span>额度已用完</span></div>
-    <div class="admin-metric"><strong>${metrics.users.personal_api}</strong><span>自配 API</span></div>
-    <div class="admin-metric"><strong>${metrics.usage.today}</strong><span>今日调用</span></div>
-    <div class="admin-metric"><strong>${metrics.usage.last_7_days}</strong><span>近7日调用</span></div>
-    <div class="admin-module-rank">${modules || "<span>暂无调用</span>"}</div>
-  </div>`;
-}
-
-async function deleteUser(userId) {
-  if (!confirm("确定删除该用户吗？该操作会同时删除他的历史记录。")) return;
-  try {
-    const resp = await fetch(`/api/admin/delete-user/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
-}
-
-
-async function revokeUser(userId) {
-  try {
-    const resp = await fetch(`/api/admin/revoke/${userId}`, { method: "POST" });
-    const data = await resp.json();
-    if (data.status === "ok") {
-      loadAllUsers();
-    } else {
-      alert(data.error || "操作失败");
-    }
-  } catch (e) {
-    alert("网络错误");
-  }
 }
 
 // ===== User-controlled AI memory =====
@@ -3295,7 +3104,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     const resp = await fetch("/api/auth/status");
     const data = await resp.json();
-    if (data.authenticated) {
+    if (data.authenticated && data.user) {
+      if (data.user.is_admin || data.user.role === "admin") {
+        window.location.replace("/admin");
+        return;
+      }
       hideAuth();
       applyUserUI(data.user);
       initApp();

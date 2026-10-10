@@ -2,64 +2,118 @@
 
 import json
 import os
+from threading import RLock
 from openai import OpenAI
 from openai import AuthenticationError, APIError
 from dotenv import load_dotenv
+from core.model_settings import DEFAULT_BASE_URL, DEFAULT_MODEL, normalize_provider_url, validate_model_name
 
 load_dotenv()
 
 _client = None
 _clients = {}
 _config = {}
+_config_lock = RLock()
+_CLIENT_CACHE_LIMIT = 128
 DEMO_MODE = False  # 无 API Key 时自动启用演示模式
+
+_AUTH_ERROR = '[api_error: API Key 无效或权限不足，请检查当前账号的模型配置]'
+_API_ERROR = '[api_error: 模型服务请求失败，请稍后重试或检查配置]'
+_REQUEST_ERROR = '[error: 模型请求失败，请检查配置后重试]'
 
 
 def update_config(**kwargs):
     global _client, _config
-    _config.update(kwargs)
-    _client = None
+    with _config_lock:
+        _config.update(kwargs)
+        _client = None
+        _clients.clear()
+
+
+def _selected_api_key(config_override=None):
+    personal_key = config_override.get('api_key') if isinstance(config_override, dict) else None
+    if personal_key is not None and not isinstance(personal_key, str):
+        raise ValueError('API Key 必须是文本')
+    if personal_key and personal_key.strip():
+        return personal_key.strip(), True
+    with _config_lock:
+        key = _config.get('api_key', os.getenv('LLM_API_KEY', ''))
+    if key is not None and not isinstance(key, str):
+        raise ValueError('API Key 必须是文本')
+    return (key or '').strip(), False
 
 
 def _merged_config(config_override=None):
-    config = dict(_config)
-    if config_override:
-        config.update({k: v for k, v in config_override.items() if v})
-    return config
+    with _config_lock:
+        api_key, personal = _selected_api_key(config_override)
+        shared = dict(_config)
+        shared_base_url = shared.get('base_url') or os.getenv('LLM_BASE_URL') or DEFAULT_BASE_URL
+        shared_model = shared.get('model') or os.getenv('LLM_MODEL') or DEFAULT_MODEL
+    if personal:
+        # A personal key belongs to its own provider. Missing personal settings
+        # use our defaults, never the provider selected for the shared key.
+        base_url = config_override.get('base_url') or DEFAULT_BASE_URL
+        model = config_override.get('model') or DEFAULT_MODEL
+    else:
+        # Endpoint/model overrides without a personal key are ignored: they
+        # cannot route the shared credential to another provider.
+        base_url = shared_base_url
+        model = shared_model
+    return {
+        'api_key': api_key,
+        'base_url': normalize_provider_url(base_url),
+        'model': validate_model_name(model),
+    }
 
 
 def is_demo_mode(config_override=None):
     """检查是否为演示模式（无有效 API Key）"""
-    config = _merged_config(config_override)
-    api_key = config.get("api_key") or os.getenv("LLM_API_KEY", "")
+    api_key, _personal = _selected_api_key(config_override)
     return DEMO_MODE or not api_key or api_key.startswith("sk-placeholder")
 
 
 def get_client(config_override=None):
+    with _config_lock:
+        return _client_for_config(_merged_config(config_override))
+
+
+def _prepare_request(config_override=None, model_override=''):
+    # Resolve demo status, provider/key/model, and cache acquisition together.
+    # update_config cannot clear the cache between an old configuration snapshot
+    # and its insertion, or turn a pending request into a placeholder-key call.
+    with _config_lock:
+        if is_demo_mode(config_override):
+            return None
+        config = _merged_config(config_override)
+        _api_key, personal = _selected_api_key(config_override)
+        model = validate_model_name(model_override) if personal and model_override else config['model']
+        return _client_for_config(config), model
+
+
+def _client_for_config(config):
     global _client
-    config = _merged_config(config_override)
-    api_key = config.get("api_key") or os.getenv("LLM_API_KEY", "sk-placeholder")
-    base_url = config.get("base_url") or os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    api_key = config['api_key'] or 'sk-placeholder'
+    base_url = config['base_url']
     cache_key = (api_key, base_url)
-    if config_override:
-        if cache_key not in _clients:
-            _clients[cache_key] = OpenAI(api_key=api_key, base_url=base_url)
-        return _clients[cache_key]
-    if _client is None:
-        _client = OpenAI(api_key=api_key, base_url=base_url)
-    return _client
+    with _config_lock:
+        client = _clients.pop(cache_key, None)
+        if client is None:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        _clients[cache_key] = client
+        while len(_clients) > _CLIENT_CACHE_LIMIT:
+            _clients.pop(next(iter(_clients)))
+        _client = client
+        return client
 
 
 def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.3, model_override: str = "", config_override=None) -> str:
     """调用 LLM，返回原始文本。演示模式下返回 mock 数据"""
-    if is_demo_mode(config_override):
-        return '[demo_mode]'
-
-    config = _merged_config(config_override)
-    model = model_override or config.get("model") or os.getenv("LLM_MODEL", "gpt-4o")
-    timeout = int(os.getenv("LLM_TIMEOUT", "300"))
-
     try:
-        client = get_client(config_override)
+        prepared = _prepare_request(config_override, model_override)
+        if prepared is None:
+            return '[demo_mode]'
+        client, model = prepared
+        timeout = int(os.getenv("LLM_TIMEOUT", "300"))
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -71,27 +125,22 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.3, mod
         )
         return response.choices[0].message.content
     except AuthenticationError:
-        global DEMO_MODE
-        DEMO_MODE = True
-        return '[demo_mode]'
-    except APIError as e:
-        return f'[api_error: {str(e)[:200]}]'
-    except Exception as e:
-        return f'[error: {str(e)[:200]}]'
+        return _AUTH_ERROR
+    except APIError:
+        return _API_ERROR
+    except Exception:
+        return _REQUEST_ERROR
 
 
 def call_llm_stream(system_prompt: str, user_prompt: str, temperature: float = 0.3, model_override: str = "", config_override=None):
     """流式调用 LLM，yield 文本块。演示模式下 yield '[demo_mode]'"""
-    if is_demo_mode(config_override):
-        yield '[demo_mode]'
-        return
-
-    config = _merged_config(config_override)
-    model = model_override or config.get("model") or os.getenv("LLM_MODEL", "gpt-4o")
-    timeout = int(os.getenv("LLM_TIMEOUT", "300"))
-
     try:
-        client = get_client(config_override)
+        prepared = _prepare_request(config_override, model_override)
+        if prepared is None:
+            yield '[demo_mode]'
+            return
+        client, model = prepared
+        timeout = int(os.getenv("LLM_TIMEOUT", "300"))
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -106,13 +155,11 @@ def call_llm_stream(system_prompt: str, user_prompt: str, temperature: float = 0
             if chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
     except AuthenticationError:
-        global DEMO_MODE
-        DEMO_MODE = True
-        yield '[demo_mode]'
-    except APIError as e:
-        yield f'[api_error: {str(e)[:200]}]'
-    except Exception as e:
-        yield f'[error: {str(e)[:200]}]'
+        yield _AUTH_ERROR
+    except APIError:
+        yield _API_ERROR
+    except Exception:
+        yield _REQUEST_ERROR
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -171,14 +218,16 @@ def call_llm_stream_json(system_prompt: str, user_prompt: str, temperature: floa
 
 def test_llm_connection(api_key: str, base_url: str, model: str):
     """用一次极小请求测试 OpenAI 兼容接口是否可用。"""
-    if not api_key:
+    if not isinstance(api_key, str) or not api_key.strip() or api_key.strip().startswith('sk-placeholder'):
         return False, "请输入 API Key"
     if not base_url:
         return False, "请选择 Base URL"
     if not model:
         return False, "请选择默认模型"
     try:
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        base_url = normalize_provider_url(base_url)
+        model = validate_model_name(model)
+        client = get_client({'api_key': api_key, 'base_url': base_url, 'model': model})
         client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],
@@ -189,7 +238,9 @@ def test_llm_connection(api_key: str, base_url: str, model: str):
         return True, "连接测试成功"
     except AuthenticationError:
         return False, "API Key 无效或权限不足"
-    except APIError as e:
-        return False, f"接口返回错误：{str(e)[:160]}"
-    except Exception as e:
-        return False, f"连接失败：{str(e)[:160]}"
+    except ValueError:
+        return False, '模型服务地址或模型名称不正确'
+    except APIError:
+        return False, '接口返回错误，请检查服务状态和模型配置'
+    except Exception:
+        return False, '连接失败，请检查模型配置后重试'
