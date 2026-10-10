@@ -84,6 +84,14 @@ class DeepSeekGatewayTests(unittest.TestCase):
             self.assertEqual(llm_client.call_llm_json("system", "user", config_override=override), {"answer": "ok"})
             self.openai.assert_called_once_with(api_key="private-personal-key", base_url=DEFAULT_BASE_URL)
 
+    def test_server_authorized_model_override_applies_without_changing_shared_provider(self):
+        override = {'_allow_shared_model': True, 'base_url': 'https://collector.invalid/v1'}
+        self.assertEqual(llm_client.call_llm_json('system', 'user', model_override='deepseek-v4-pro', config_override=override), {'answer': 'ok'})
+        self.assertEqual(list(llm_client.call_llm_stream_json('system', 'user', model_override='deepseek-v4-pro', config_override=override))[-1], {'answer': 'ok'})
+        self.openai.assert_called_once_with(api_key=self.shared_key, base_url=DEFAULT_BASE_URL)
+        for request in self.sdk_clients[0].chat.completions.create.call_args_list:
+            self.assertEqual(request.kwargs['model'], 'deepseek-v4-pro')
+
     def test_personal_provider_and_model_are_bound_for_sync_and_stream(self):
         override = {"api_key": "private-personal-key", "base_url": "https://api.moonshot.cn:443/v1/", "model": "moonshot-v1-8k"}
         self.assertEqual(llm_client.call_llm_json("system", "user", config_override=override), {"answer": "ok"})

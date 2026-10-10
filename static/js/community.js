@@ -91,8 +91,11 @@ async function submitCommunityPost(event) {
   };
   try {
     const data = await communityFetch("/api/community/posts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    closeCommunityComposer(); await loadCommunityPosts(); await openCommunityPost(data.post.id);
+    closeCommunityComposer(); await loadCommunityPosts();
+    if (data.review_state === "pending") { alert("内容包含敏感词，已提交人工审核，通过后将公开展示。"); return; }
+    await openCommunityPost(data.post.id);
     if (data.privacy_meta?.masked_count) alert(`发布前已自动隐藏 ${data.privacy_meta.masked_count} 处个人信息。`);
+    if (data.warnings?.length) alert(`提示：内容包含敏感词（${data.warnings.join("、")}），请注意规范表达。`);
   } catch (error) { alert(error.message); }
 }
 
@@ -143,7 +146,17 @@ function renderComment(item, reply) {
 
 let communityReplyTo = null;
 function prepareCommentReply(id, name) { communityReplyTo = id; const input = document.getElementById("community-comment-body"); input.placeholder = `回复 ${name}`; input.focus(); }
-async function submitCommunityComment(event, postId) { event.preventDefault(); const input = document.getElementById("community-comment-body"); try { await communityFetch(`/api/community/posts/${postId}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: input.value, parent_id: communityReplyTo }) }); communityReplyTo = null; await openCommunityPost(postId); } catch(error) { alert(error.message); } }
+async function submitCommunityComment(event, postId) {
+  event.preventDefault();
+  const input = document.getElementById("community-comment-body");
+  try {
+    const data = await communityFetch(`/api/community/posts/${postId}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: input.value, parent_id: communityReplyTo }) });
+    communityReplyTo = null;
+    await openCommunityPost(postId);
+    if (data.review_state === "pending") { alert("回复包含敏感词，已提交人工审核。"); return; }
+    if (data.warnings?.length) alert(`提示：回复包含敏感词（${data.warnings.join("、")}），请注意规范表达。`);
+  } catch(error) { alert(error.message); }
+}
 async function togglePostReaction(id, type) { try { await communityFetch(`/api/community/posts/${id}/${type}`, { method: "POST" }); await openCommunityPost(id); loadCommunityPosts(); } catch(error) { alert(error.message); } }
 async function toggleCommentLike(id) { try { await communityFetch(`/api/community/comments/${id}/like`, { method: "POST" }); await openCommunityPost(communityState.currentPostId); } catch(error) { alert(error.message); } }
 async function updateHelpStatus(id, value) { try { await communityFetch(`/api/community/posts/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ help_status: value }) }); await openCommunityPost(id); } catch(error) { alert(error.message); } }

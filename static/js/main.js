@@ -1051,14 +1051,15 @@ async function exportAgentDocument(format = "docx") {
 function switchTab(module, tab) {
   const section = document.getElementById(`module-${module}`);
   section.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
-  section.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+  section.querySelectorAll(".tab-pane").forEach(p => {
+    const selected = p.id === `${module}-${tab}`;
+    p.classList.toggle("active", selected);
+    p.classList.toggle("hidden", !selected);
+  });
 
   const tabs = section.querySelectorAll(".tab");
   if (tab === "upload" && tabs.length > 1) tabs[1].classList.add("active");
   else if (tabs.length > 0) tabs[0].classList.add("active");
-
-  const pane = document.getElementById(`${module}-${tab}`);
-  if (pane) pane.classList.add("active");
 }
 
 // ===== File Selection =====
@@ -1351,9 +1352,97 @@ async function apiGet(url) {
   }
 }
 
+const resultValueLabels = {
+  law_name: "法规",
+  article: "条款",
+  content: "内容",
+  note: "说明",
+  summary: "摘要",
+  suggestion: "建议",
+  role: "身份",
+  party_role: "身份",
+  name: "姓名或名称",
+  party_name: "姓名或名称",
+  identity: "身份信息",
+  description: "说明",
+  value: "内容",
+  plaintiff: "原告",
+  defendant: "被告",
+  applicant: "申请人",
+  respondent: "被申请人",
+  appellant: "上诉人",
+  appellee: "被上诉人",
+};
+
+function cleanDisplayText(value) {
+  if (value === null || value === undefined) return "";
+  if (!["string", "number", "boolean"].includes(typeof value)) return "";
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return /^(?:\[object Object\]|object Object|undefined|null|none|nan)$/i.test(text) ? "" : text;
+}
+
+function readableResultValue(value, depth = 0) {
+  if (depth > 4) return "";
+  const scalar = cleanDisplayText(value);
+  if (scalar) return scalar;
+  if (Array.isArray(value)) {
+    return value.map(item => readableResultValue(item, depth + 1)).filter(Boolean).join("；");
+  }
+  if (value && typeof value === "object") {
+    const lawName = cleanDisplayText(value.law_name);
+    if (lawName) {
+      const article = readableResultValue(value.article, depth + 1);
+      const detail = readableResultValue(value.content || value.note || value.applicability, depth + 1);
+      const heading = `《${lawName.replace(/[《》]/g, "")}》${article}`;
+      return detail ? `${heading}：${detail}` : heading;
+    }
+    return Object.entries(value).map(([key, nested]) => {
+      const text = readableResultValue(nested, depth + 1);
+      if (!text) return "";
+      const label = resultValueLabels[key] || (/[㐀-鿿]/.test(key) ? key : "");
+      return label ? `${label}：${text}` : text;
+    }).filter(Boolean).join("；");
+  }
+  return "";
+}
+
+function partyDisplayText(value, roleOverride = "") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const text = readableResultValue(value);
+    return roleOverride && text ? `${roleOverride}：${text}` : text;
+  }
+  const first = keys => keys.map(key => readableResultValue(value[key])).find(Boolean) || "";
+  const role = roleOverride || first(["role", "party_role", "type", "角色", "诉讼地位", "当事人身份"]);
+  const name = first(["name", "party_name", "party", "entity", "姓名", "名称", "当事人"]);
+  const detail = first(["identity", "description", "basic_info", "status", "身份信息", "基本信息"]);
+  if (name) {
+    const main = role ? `${role}：${name}` : name;
+    return detail && detail !== role && detail !== name ? `${main}（${detail}）` : main;
+  }
+  const generic = readableResultValue(value);
+  return role && generic && generic !== role ? `${role}：${generic}` : (role || generic);
+}
+
+function normalizePartyEntries(value) {
+  if (!value) return [];
+  let candidates = [];
+  if (Array.isArray(value)) {
+    candidates = value.map(item => partyDisplayText(item));
+  } else if (typeof value === "object") {
+    const partyKeys = new Set(["role", "party_role", "type", "角色", "诉讼地位", "当事人身份", "name", "party_name", "party", "entity", "姓名", "名称", "当事人", "identity", "description", "basic_info", "status", "身份信息", "基本信息"]);
+    const isSingleParty = Object.keys(value).some(key => partyKeys.has(key));
+    candidates = isSingleParty
+      ? [partyDisplayText(value)]
+      : Object.entries(value).map(([role, info]) => partyDisplayText(info, resultValueLabels[role] || role));
+  } else {
+    candidates = [partyDisplayText(value)];
+  }
+  return [...new Set(candidates.map(cleanDisplayText).filter(Boolean))];
+}
+
 function escapeHtml(s) {
   const div = document.createElement("div");
-  div.textContent = s;
+  div.textContent = readableResultValue(s);
   return div.innerHTML;
 }
 
@@ -1417,8 +1506,9 @@ function renderAnalyzeResult(result) {
     <div class="stat-cell"><div class="stat-value">${(result.risk_points || []).length}</div><div class="stat-label">风险点</div></div>
   </div>`;
 
-  if (result.parties && result.parties.length) {
-    html += `<div class="result-section-title">涉及各方</div><p>${result.parties.map(escapeHtml).join(" &nbsp;·&nbsp; ")}</p>`;
+  const parties = normalizePartyEntries(result.parties);
+  if (parties.length) {
+    html += `<div class="result-section-title">涉及各方</div><p>${parties.map(escapeHtml).join(" &nbsp;·&nbsp; ")}</p>`;
   }
 
   if (result.key_clauses && result.key_clauses.length) {
@@ -2852,7 +2942,6 @@ function saveConfig() {
         document.getElementById("cfg-key").value = "";
         document.getElementById("cfg-key").placeholder = "已保存，可输入新 Key 覆盖";
         updateConfigCurrent(true);
-        updateStatusBadge(false);
       } else {
         msgEl.textContent = data.error || "保存失败";
         msgEl.style.color = "var(--danger)";
@@ -2883,19 +2972,6 @@ async function testConfig() {
   } catch (e) {
     msgEl.textContent = "网络错误";
     msgEl.style.color = "var(--danger)";
-  }
-}
-
-function updateStatusBadge(isDemo) {
-  const pulse = document.getElementById("status-pulse");
-  const label = document.getElementById("api-status-label");
-  if (!pulse || !label) return;
-  if (isDemo) {
-    pulse.classList.remove("live");
-    label.textContent = "演示模式";
-  } else {
-    pulse.classList.add("live");
-    label.textContent = "AI 已连接";
   }
 }
 
@@ -2941,7 +3017,9 @@ function applyUserUI(u) {
   window._user = u;
   const workspaceName = document.getElementById("workspace-username");
   if (workspaceName) workspaceName.textContent = u.username;
+
   document.getElementById("btn-config-gear").style.display = "";
+  document.getElementById("approval-hint").classList.add("hidden");
   updateQuotaHint();
   loadAgentConversations();
   if (typeof initMingjianChat === "function") initMingjianChat();
@@ -2957,7 +3035,7 @@ function updateQuotaHint() {
   const hint = document.getElementById("approval-hint");
   const text = document.getElementById("free-quota-text");
 
-  if (!u || u.is_admin || u.role === "admin") {
+  if (!u || u.is_admin || u.is_test_account) {
     hint.classList.add("hidden");
     return;
   }
@@ -2993,6 +3071,7 @@ async function doLogin() {
     });
     const data = await resp.json();
     if (data.status === "ok") {
+      if (data.user.is_admin) { window.location.href = "/admin"; return false; }
       hideAuth();
       applyUserUI(data.user);
       initApp();
@@ -3058,10 +3137,7 @@ async function initApp() {
     const resp = await fetch("/api/auth/status");
     const data = await resp.json();
     if (data.authenticated && data.user) {
-      if (data.user.is_admin || data.user.role === "admin") {
-        window.location.replace("/admin");
-        return;
-      }
+      if (data.user.is_admin) { window.location.href = "/admin"; return; }
       window._user = data.user;
       document.getElementById("btn-config-gear").style.display = "";
       updateQuotaHint();

@@ -3,235 +3,130 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const root = path.join(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'static/js/admin.js'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'templates/admin.html'), 'utf8');
+const main = fs.readFileSync(path.join(root, 'static/js/main.js'), 'utf8');
 
-const sourceRoot = path.join(__dirname, '..');
-const indexHtml = fs.readFileSync(path.join(sourceRoot, 'templates/index.html'), 'utf8');
-const adminHtml = fs.readFileSync(path.join(sourceRoot, 'templates/admin.html'), 'utf8');
-const mainJs = fs.readFileSync(path.join(sourceRoot, 'static/js/main.js'), 'utf8');
-const adminJs = fs.readFileSync(path.join(sourceRoot, 'static/js/admin.js'), 'utf8');
-
-function setup(source = adminJs, html = adminHtml, handler = () => ({})) {
+function setup(handler = () => ({})) {
   const elements = new Map();
   const calls = [];
-  const redirects = [];
-  const readyCallbacks = [];
-  class Element {
-    constructor(id = '') {
-      this.id = id;
-      this.value = '';
-      this.style = {};
-      this.children = [];
-      this._text = '';
-      this.innerHTML = '';
-      this.className = '';
-      this.listeners = {};
+  function el(id) {
+    if (!elements.has(id)) {
       const classes = new Set();
-      this.classList = {
-        add: (...names) => names.forEach(name => classes.add(name)),
-        remove: (...names) => names.forEach(name => classes.delete(name)),
-        contains: name => classes.has(name),
-        toggle: name => classes.has(name) ? classes.delete(name) : classes.add(name),
-      };
+      elements.set(id, { id, value:'', textContent:'', innerHTML:'', style:{}, dataset:{},
+        classList:{add:x=>classes.add(x), remove:x=>classes.delete(x),
+          contains:x=>classes.has(x), toggle:(x,on)=>on?classes.add(x):classes.delete(x)},
+        addEventListener(){}, appendChild(){}, focus(){} });
     }
-    get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
-    set textContent(value) { this._text = String(value); this.children = []; }
-    appendChild(child) { this.children.push(child); return child; }
-    replaceChildren(...children) { this._text = ''; this.children = children; }
-    addEventListener(name, callback) { this.listeners[name] = callback; }
-    querySelectorAll() { return []; }
-    reset() {
-      const fields = {
-        'admin-model-form': ['admin-model-key', 'admin-model-base-url', 'admin-model-name'],
-        'admin-profile-form': ['admin-profile-username', 'admin-current-password', 'admin-new-password', 'admin-confirm-password'],
-        'admin-test-user-form': ['test-user-username', 'test-user-password'],
-      }[this.id] || [];
-      fields.forEach(id => { elements.get(id).value = ''; });
-    }
-    focus() {}
+    return elements.get(id);
   }
-  for (const match of html.matchAll(/id="([^"]+)"/g)) elements.set(match[1], new Element(match[1]));
-  if (elements.has('admin-user-filter')) elements.get('admin-user-filter').value = 'all';
-  if (elements.has('admin-model-base-url')) elements.get('admin-model-base-url').value = 'https://api.deepseek.com/v1';
-  if (elements.has('admin-model-name')) elements.get('admin-model-name').value = 'deepseek-flash';
   const context = vm.createContext({
-    document: {
-      getElementById: id => elements.get(id) || null,
-      createElement: () => new Element(),
-      addEventListener: (name, callback) => { if (name === 'DOMContentLoaded') readyCallbacks.push(callback); },
-      querySelectorAll: () => [],
+    document:{getElementById:el, querySelectorAll:()=>[], createElement:()=>el('admin-toast'), body:{appendChild(){}}},
+    fetch:async(url,options={})=>{
+      calls.push({url,options});
+      const data = await handler(url,options);
+      return {ok:!(data.statusCode>=400), status:data.statusCode||200, json:async()=>data.body||data};
     },
-    window: { addEventListener() {}, location: { replace: url => redirects.push(url) } },
-    fetch: async (url, options = {}) => {
-      calls.push({ url, options });
-      const result = await handler(url, options);
-      return { ok: (result.statusCode || 200) < 400, status: result.statusCode || 200, json: async () => result.data ?? result };
-    },
-    confirm: () => true, alert() {}, FormData, TextDecoder,
+    URLSearchParams, setTimeout:()=>1, clearTimeout(){},
   });
   vm.runInContext(source, context);
-  return { context, calls, redirects, readyCallbacks, element: id => elements.get(id), run: code => vm.runInContext(code, context) };
+  return {el,calls,run:s=>vm.runInContext(s,context)};
 }
+const flush = () => new Promise(resolve => setImmediate(resolve));
 
-const admin = { id: 1, username: 'manager', is_admin: true, role: 'admin' };
-const ordinary = { id: 2, username: 'student', is_admin: false, role: 'user', is_approved: true, ai_unlimited: true, free_api_remaining: null };
-const preventEvent = { preventDefault() {} };
-
-function adminResponses(url) {
-  if (url === '/api/auth/status') return { authenticated: true, user: admin };
-  if (url === '/api/admin/all-users') return { users: [ordinary, admin], administrators: [admin] };
-  if (url === '/api/admin/metrics') return { users: { total: 1, quota_exhausted: 0, personal_api: 0 }, usage: { today: 3, last_7_days: 8 } };
-  if (url === '/api/admin/model-config') return { has_api_key: true, base_url: 'https://api.deepseek.com/v1', model: 'deepseek-flash' };
-  return { status: 'ok' };
-}
-
-test('ordinary template and script contain no embedded administrator panel or management requests', () => {
-  assert.doesNotMatch(indexHtml, /admin-panel|admin-content|admin-overlay|toggleAdminPanel/);
-  assert.doesNotMatch(mainJs, /\/api\/admin\//);
-  assert.match(indexHtml, /href="\/admin"/);
-  assert.match(indexHtml, /value="deepseek-flash">DeepSeek V4\.1 Flash/);
-  assert.doesNotMatch(adminHtml, /main\.js|community\.js|chat\.js/);
-  assert.doesNotMatch(adminJs, /localStorage|sessionStorage|console\.|innerHTML|["']\/api\/config/);
-});
-
-test('null quota and explicit unlimited state display unlimited rather than zero; personal API remains supported', () => {
-  const app = setup(mainJs, indexHtml);
-  for (const state of [{ free_api_remaining: null }, { ai_unlimited: true, free_api_remaining: 0 }, { quota_mode: 'unlimited' }, { remaining: null }]) {
-    app.context.window._user = { username: 'student', ...state };
-    app.run('updateQuotaHint()');
-    assert.equal(app.element('free-quota-text').textContent, 'AI 不限次数');
-    assert.equal(app.element('free-quota-text').classList.contains('quota-exhausted'), false);
+test('independent admin form prevents default submission and contains all teacher sections', () => {
+  assert.match(html,/event.preventDefault\(\); adminLogin\(\); return false/);
+  for (const name of ['dashboard','users','review','reports','logs','system']) {
+    assert.ok(html.includes('data-section="'+name+'"'));
   }
-  app.context.window._user = { has_llm_api_key: true, free_api_remaining: 0 };
-  app.run('updateQuotaHint()');
-  assert.equal(app.element('free-quota-text').textContent, '个人 API 已启用');
-  app.context.window._user = { free_api_remaining: 0, free_api_limit: 10 };
-  app.run('updateQuotaHint()');
-  assert.equal(app.element('free-quota-text').textContent, '免费额度 0/10');
-  assert.equal(app.element('free-quota-text').classList.contains('quota-exhausted'), true);
+  assert.doesNotMatch(main,/toggleAdminPanel|id="admin-panel"/);
+  assert.match(main,/window.location.replace\("\/admin"\)/);
 });
 
-test('administrator on ordinary page redirects without requesting user histories or touching removed DOM', () => {
-  const app = setup(mainJs, indexHtml);
-  app.context.person = admin;
-  app.run('applyUserUI(person); updateStatusBadge(false)');
-  assert.deepEqual(app.redirects, ['/admin']);
-  assert.equal(app.calls.length, 0);
+test('ordinary session cannot load management and is not silently logged out', async () => {
+  const app=setup(()=>({authenticated:true,user:{is_admin:false}}));
+  await flush();
+  assert.ok(!app.calls.some(x=>x.url==='/api/auth/logout'));
+  await assert.rejects(app.run("api('/api/admin/users')"),/管理员/);
+  assert.ok(!app.calls.some(x=>x.url==='/api/admin/users'));
 });
 
-test('anonymous and ordinary sessions cannot load administrator data', async () => {
-  for (const auth of [{ authenticated: false }, { authenticated: true, user: ordinary }]) {
-    const app = setup(adminJs, adminHtml, () => auth);
-    await app.run('initAdminPage()');
-    assert.deepEqual(app.calls.map(call => call.url), ['/api/auth/status']);
-    assert.equal(app.element('admin-dashboard').classList.contains('hidden'), true);
-    assert.equal(app.element('admin-login-view').classList.contains('hidden'), false);
-    await assert.rejects(app.run('adminRequest("/api/admin/all-users")'), /先登录管理员/);
-    assert.equal(app.calls.length, 1);
-  }
+test('admin login uses dedicated endpoint and clears password', async () => {
+  const app=setup(url=>url==='/api/admin/login'?{user:{is_admin:true,username:'manager'}}:{});
+  app.el('admin-login-username').value='manager';
+  app.el('admin-login-password').value='offline-password';
+  await app.run('adminLogin()');
+  assert.ok(app.calls.some(x=>x.url==='/api/admin/login'));
+  assert.equal(app.el('admin-login-password').value,'');
+  assert.equal(app.run('state.user.username'),'manager');
 });
 
-test('administrator loads its own API endpoints and separate user and administrator lists', async () => {
-  const app = setup(adminJs, adminHtml, adminResponses);
-  await app.run('initAdminPage()');
-  assert.equal(app.element('admin-dashboard').classList.contains('hidden'), false);
-  assert.equal(app.element('admin-identity').textContent, 'manager');
-  assert.match(app.element('admin-users-list').textContent, /student.*AI 不限次数/);
-  assert.doesNotMatch(app.element('admin-users-list').textContent, /manager/);
-  assert.match(app.element('admin-administrators-list').textContent, /manager.*当前账号/);
-  assert.equal(app.element('admin-model-key').value, '');
-  assert.equal(app.element('admin-model-name').value, 'deepseek-flash');
-  assert.deepEqual(app.calls.map(call => call.url).sort(), ['/api/admin/all-users', '/api/admin/metrics', '/api/admin/model-config', '/api/auth/status'].sort());
+test('expired session clears sensitive DOM and pending confirmation', async () => {
+  const app=setup(()=>({statusCode:401,body:{error:'expired'}}));
+  await flush();
+  app.run("state.user={is_admin:true}; _confirmCb=()=>{}");
+  app.el('admin-view').innerHTML='sensitive content';
+  app.el('admin-modal-content').innerHTML='private form';
+  await assert.rejects(app.run("api('/api/admin/users')"));
+  assert.equal(app.run('state.user'),null);
+  assert.equal(app.run('_confirmCb'),null);
+  assert.equal(app.el('admin-view').innerHTML,'');
+  assert.equal(app.el('admin-modal-content').innerHTML,'');
 });
 
-test('expired administrator session clears data and form secrets', async () => {
-  let expired = false;
-  const app = setup(adminJs, adminHtml, url => expired ? { statusCode: 403, data: { error: '无权限' } } : adminResponses(url));
-  await app.run('initAdminPage()');
-  app.element('admin-model-key').value = 'transient-provider-secret';
-  app.element('admin-new-password').value = 'transient-account-password';
-  expired = true;
-  await assert.rejects(app.run('adminRequest("/api/admin/all-users")'), /无权限/);
-  assert.equal(app.element('admin-dashboard').classList.contains('hidden'), true);
-  assert.equal(app.element('admin-users-list').textContent, '');
-  assert.equal(app.element('admin-administrators-list').textContent, '');
-  assert.equal(app.element('admin-model-key').value, '');
-  assert.equal(app.element('admin-new-password').value, '');
+test('incorrect current password does not clear valid admin session', async () => {
+  const app=setup(()=>({statusCode:401,body:{code:'CURRENT_PASSWORD_INCORRECT',error:'wrong'}}));
+  await flush();
+  app.run("state.user={is_admin:true}");
+  await assert.rejects(app.run("api('/api/admin/profile',{method:'POST'})"));
+  assert.equal(app.run('state.user.is_admin'),true);
 });
 
-test('administrator profile enforces password length and submits only the current account change', async () => {
-  const app = setup(adminJs, adminHtml, adminResponses);
-  await app.run('initAdminPage()');
-  app.context.event = preventEvent;
-  app.element('admin-profile-username').value = 'renamed-manager';
-  app.element('admin-current-password').value = 'old-password';
-  app.element('admin-new-password').value = 'short';
-  app.element('admin-confirm-password').value = 'short';
-  const before = app.calls.length;
-  await app.run('saveAdminProfile(event)');
-  assert.equal(app.calls.length, before);
-  assert.match(app.element('admin-profile-message').textContent, /至少 12/);
-  app.element('admin-new-password').value = 'new-password-with-space ';
-  app.element('admin-confirm-password').value = 'new-password-with-space ';
-  await app.run('saveAdminProfile(event)');
-  const request = app.calls.find(call => call.url === '/api/admin/profile');
-  assert.deepEqual(JSON.parse(request.options.body), { current_password: 'old-password', username: 'renamed-manager', password: 'new-password-with-space ' });
-  assert.equal(app.element('admin-current-password').value, '');
-  assert.equal(app.element('admin-new-password').value, '');
-  assert.equal(app.element('admin-identity').textContent, 'renamed-manager');
+test('system settings use admin endpoint, preserve blank key and clear entered key', async () => {
+  const app=setup(()=>({status:'ok'}));
+  await flush();
+  app.run("state.user={is_admin:true}");
+  app.el('cfg-key').value='';
+  app.el('cfg-url').value='https://api.deepseek.com/v1';
+  app.el('cfg-model').value='deepseek-flash';
+  await app.run('saveSystemConfig()');
+  const call=app.calls.find(x=>x.url==='/api/admin/model-config');
+  assert.equal(JSON.parse(call.options.body).api_key,'');
+  app.el('cfg-key').value='offline-secret-not-real';
+  await app.run('saveSystemConfig()');
+  assert.equal(app.el('cfg-key').value,'');
 });
 
-test('incorrect current password keeps the administrator session only for the explicit profile error code', async () => {
-  const app = setup(adminJs, adminHtml, url => url === '/api/admin/profile' ? { statusCode: 401, data: { error: '当前密码错误', code: 'CURRENT_PASSWORD_INCORRECT' } } : adminResponses(url));
-  await app.run('initAdminPage()');
-  app.context.event = preventEvent;
-  app.element('admin-current-password').value = 'incorrect-password';
-  await app.run('saveAdminProfile(event)');
-  assert.equal(app.element('admin-dashboard').classList.contains('hidden'), false);
-  assert.equal(app.element('admin-identity').textContent, 'manager');
-  assert.match(app.element('admin-profile-message').textContent, /当前密码错误/);
+test('user quota correctly renders unlimited and content is escaped', () => {
+  const app=setup();
+  const row=app.run("userRow({id:2,username:'<script>bad</script>',is_admin:false,is_approved:true,free_api_remaining:null})");
+  assert.ok(row.includes('不限应用次数'));
+  assert.ok(!row.includes('null/'));
+  assert.ok(!row.includes('<script>'));
 });
 
-test('global config keeps existing secret when blank and sends new secret only to administrator config API', async () => {
-  const app = setup(adminJs, adminHtml, adminResponses);
-  await app.run('initAdminPage()');
-  app.context.event = preventEvent;
-  await app.run('saveAdminModel(event)');
-  const first = app.calls.find(call => call.url === '/api/admin/model-config' && call.options.method === 'POST');
-  assert.equal(Object.hasOwn(JSON.parse(first.options.body), 'api_key'), false);
-  app.element('admin-model-key').value = 'test-secret-only-in-request';
-  await app.run('saveAdminModel(event)');
-  const saves = app.calls.filter(call => call.url === '/api/admin/model-config' && call.options.method === 'POST');
-  assert.equal(JSON.parse(saves[1].options.body).api_key, 'test-secret-only-in-request');
-  assert.equal(app.element('admin-model-key').value, '');
-  assert.equal(app.calls.some(call => call.url === '/api/config'), false);
+test('reset quota and model change wait for second confirmation', async () => {
+  const app=setup();
+  await flush();
+  app.run("state.user={is_admin:true}; state.users.list=[{id:2,username:'student',llm_model:'deepseek-flash'}]");
+  app.run('resetQuota(2)');
+  assert.ok(!app.calls.some(x=>x.url.includes('reset-quota')));
+  assert.equal(app.run('typeof _confirmCb'),'function');
+  app.run('setUserModel(2)');
+  app.el('user-model-value').value='deepseek-flash';
+  app.run('confirmUserModel(2)');
+  assert.ok(!app.calls.some(x=>x.url.includes('set-model')));
 });
 
-test('server messages redact the entered API key and user names are rendered as text', async () => {
-  const unsafeName = '<img src=x onerror=alert(1)>';
-  const app = setup(adminJs, adminHtml, url => url === '/api/admin/all-users' ? { users: [{ ...ordinary, username: unsafeName }], administrators: [admin] } : adminResponses(url));
-  await app.run('initAdminPage()');
-  const nameElement = app.element('admin-users-list').children[0].children[0].children[0];
-  assert.equal(nameElement.textContent, unsafeName);
-  assert.equal(nameElement.innerHTML, '');
-  app.element('admin-model-key').value = 'sensitive-key-value';
-  app.context.serverMessage = 'failed for sensitive-key-value';
-  app.run('adminMessage("admin-model-message", serverMessage, "error")');
-  assert.equal(app.element('admin-model-message').textContent, 'failed for [密钥已隐藏]');
-});
-
-test('test-user creation is manual and administrator login uses its independent endpoint', async () => {
-  const app = setup(adminJs, adminHtml, url => url === '/api/admin/login' ? { status: 'ok', user: admin } : adminResponses(url));
-  app.context.event = preventEvent;
-  app.element('admin-login-username').value = 'manager';
-  app.element('admin-login-password').value = 'login-secret ';
-  await app.run('adminLogin(event)');
-  const login = app.calls.find(call => call.url === '/api/admin/login');
-  assert.equal(JSON.parse(login.options.body).password, 'login-secret ');
-  assert.equal(app.element('admin-login-password').value, '');
-  assert.equal(app.calls.some(call => call.url === '/api/admin/test-users'), false);
-  app.element('test-user-username').value = 'manual-test-user';
-  app.element('test-user-password').value = 'test-user-password';
-  await app.run('createAdminTestUser(event)');
-  assert.equal(app.calls.filter(call => call.url === '/api/admin/test-users').length, 1);
-  assert.equal(app.element('test-user-password').value, '');
+test('review and reports include reason, handler, time, pagination and escaped bodies', () => {
+  const app=setup();
+  const card=app.run("reviewCard({exists:true,target_type:'post',target_id:'1',body:'<script>x</script>',reason:'命中中危',severity:'medium'})");
+  assert.ok(card.includes('命中原因'));
+  assert.ok(!card.includes('<script>'));
+  const report=app.run("reportRow({id:1,target_type:'post',target_id:'1',status:'resolved',resolved_by:'teacher',resolved_at:'2026-10-10',target:{}})");
+  assert.ok(report.includes('teacher'));
+  assert.ok(report.includes('2026-10-10'));
+  assert.match(source,/review\/queue\?per_page=20&page=/);
+  assert.match(source,/pending.pagination/);
 });

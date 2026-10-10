@@ -102,7 +102,8 @@ class AdminModelConfigTests(unittest.TestCase):
         with app_module.app.test_request_context("/"):
             user = db.session.get(User, self.ordinary["id"])
             with mock.patch.object(app_module, "current_user", user):
-                self.assertEqual(app_module._get_llm_config(), {})
+                self.assertNotIn("base_url", app_module._get_llm_config())
+                self.assertNotIn("model", app_module._get_llm_config())
         self.assertEqual(client.get("/api/config").get_json()["base_url"], "https://api.deepseek.com/v1")
 
     def test_personal_key_stays_personal_and_global_env_is_unchanged(self):
@@ -166,6 +167,47 @@ class AdminModelConfigTests(unittest.TestCase):
         self.assertIsNone(info["free_api_remaining"])
         self.assertFalse(info["is_admin"])
         self.assertEqual(client.get("/api/admin/all-users").status_code, 403)
+
+    def test_teacher_user_management_filters_and_protects_admin_quota(self):
+        client = self.admin["client"]
+        with app_module.app.app_context():
+            user = db.session.get(User, self.ordinary["id"])
+            username = user.username
+        payload = client.get('/api/admin/users', query_string={'q': username, 'status': 'approved', 'per_page': 1}).get_json()
+        self.assertEqual(payload['pagination']['total'], 1)
+        self.assertEqual(payload['users'][0]['id'], self.ordinary['id'])
+        self.assertFalse(payload['users'][0]['is_admin'])
+        self.assertEqual(client.post('/api/admin/reset-quota/' + str(self.admin['id'])).status_code, 400)
+        self.assertEqual(client.post('/api/admin/set-model/' + str(self.ordinary['id']), json={'llm_model':'invalid model\n'}).status_code, 400)
+        self.assertEqual(client.post('/api/admin/set-model/' + str(self.ordinary['id']), json={'llm_model':'deepseek-v4-pro'}).status_code, 200)
+        self.assertEqual(self.ordinary['client'].post('/api/admin/reset-quota/' + str(self.ordinary['id'])).status_code, 403)
+
+    def test_dashboard_today_uses_china_midnight_and_separate_admin_count(self):
+        from datetime import datetime, timezone, timedelta
+        from core.admin import routes
+        from core.community.models import CommunityPost, CommunityCategory
+        created = []
+        with app_module.app.app_context():
+            category = CommunityCategory.query.first()
+            for timestamp in (datetime(2024,12,31,16,5), datetime(2025,1,1,15,55), datetime(2024,12,31,15,59)):
+                post = CommunityPost(author_id=self.ordinary['id'], category_id=category.id,
+                                     title='Timezone test', body='offline', post_type='discussion', status='published', created_at=timestamp)
+                db.session.add(post)
+                db.session.flush()
+                created.append(post.id)
+            db.session.commit()
+        try:
+            with mock.patch.object(routes, 'datetime', wraps=datetime) as clock:
+                clock.now.return_value = datetime(2025,1,1,12,tzinfo=timezone(timedelta(hours=8)))
+                result = self.admin['client'].get('/api/admin/dashboard').get_json()
+            self.assertEqual(result['today_posts'], 2)
+            self.assertEqual(result['series'][-1]['date'], '2025-01-01')
+            self.assertEqual(result['timezone'], 'Asia/Shanghai')
+            self.assertGreaterEqual(result['users']['administrators'], 1)
+        finally:
+            with app_module.app.app_context():
+                CommunityPost.query.filter(CommunityPost.id.in_(created)).delete(synchronize_session=False)
+                db.session.commit()
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ def main():
         if User.query.filter_by(username=username).first():
             parser.error("username already exists; no account was changed")
         user = User(username=username, password_hash=generate_password_hash(password),
-                    is_admin=False, is_approved=True, free_api_used=0)
+                    is_admin=False, is_approved=True, is_test_account=True, free_api_used=0)
         db.session.add(user)
         db.session.commit()
         print(f"Created ordinary approved test account: {username}")

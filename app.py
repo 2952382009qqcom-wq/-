@@ -45,10 +45,12 @@ from core.cases.routes import cases_bp
 from core.chat.routes import chat_bp
 from core.notifications.routes import notifications_bp
 from core.memory.routes import memory_bp
+from core.admin.routes import admin_bp
 from core.cases.seed import seed_reference_data
 from core.recommendations.events import record_event
 from core.taxonomy import infer_legal_domain
 from core.legal_guidance import legal_anchors_for_question, requires_legal_basis
+from core.result_normalization import normalize_module_result
 # Import model modules before db.create_all so every new table is registered.
 from core.community import models as _community_models  # noqa: F401
 from core.cases import models as _case_models  # noqa: F401
@@ -56,6 +58,7 @@ from core.chat import models as _chat_models  # noqa: F401
 from core.recommendations import models as _recommendation_models  # noqa: F401
 from core.notifications import models as _notification_models  # noqa: F401
 from core.memory import models as _memory_models  # noqa: F401
+from core.moderation import models as _moderation_models  # noqa: F401
 from core.memory.services import build_memory_context
 from core.conversation import (
     ConversationNotFound,
@@ -154,6 +157,7 @@ app.register_blueprint(cases_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(notifications_bp)
 app.register_blueprint(memory_bp)
+app.register_blueprint(admin_bp)
 # Event decorators are registered as a side effect of this import.
 from core.chat import socket_events as _chat_socket_events  # noqa: E402,F401
 
@@ -190,7 +194,46 @@ def ensure_user_schema():
         db.session.execute(text("ALTER TABLE users ADD COLUMN llm_base_url VARCHAR(255)"))
     if "free_api_used" not in columns:
         db.session.execute(text("ALTER TABLE users ADD COLUMN free_api_used INTEGER NOT NULL DEFAULT 0"))
+    if "is_test_account" not in columns:
+        db.session.execute(text("ALTER TABLE users ADD COLUMN is_test_account BOOLEAN NOT NULL DEFAULT 0"))
     db.session.commit()
+
+
+def ensure_moderation_schema():
+    inspector = inspect(db.engine)
+    columns = {column["name"] for column in inspector.get_columns("community_reports")}
+    if "resolved_by" not in columns:
+        db.session.execute(text("ALTER TABLE community_reports ADD COLUMN resolved_by INTEGER"))
+    db.session.commit()
+
+
+TEST_ACCOUNT_USERNAME = os.getenv("TEST_ACCOUNT_USERNAME", "mj123")
+TEST_ACCOUNT_PASSWORD = os.getenv("TEST_ACCOUNT_PASSWORD", "")
+TEST_ACCOUNT_MODEL = os.getenv("TEST_ACCOUNT_MODEL", DEFAULT_MODEL)
+TEST_ACCOUNT_BASE_URL = os.getenv("TEST_ACCOUNT_BASE_URL", "https://api.deepseek.com/v1")
+TEST_ACCOUNT_API_KEY = os.getenv("TEST_ACCOUNT_API_KEY", "")
+
+
+def ensure_test_account():
+    """Explicit opt-in provisioning; never promote or reset an existing identity."""
+    user = User.query.filter_by(username=TEST_ACCOUNT_USERNAME).first()
+    if user is not None:
+        if user.is_admin or not user.is_test_account:
+            raise RuntimeError("测试用户名已被其他角色使用，不会提权或覆盖")
+        return user
+    if not 3 <= len(TEST_ACCOUNT_USERNAME.strip()) <= 80:
+        raise RuntimeError("测试用户名需为3至80个字符")
+    if len(TEST_ACCOUNT_PASSWORD) < 12:
+        raise RuntimeError("创建测试账号必须显式设置至少12位 TEST_ACCOUNT_PASSWORD")
+    user = User(username=TEST_ACCOUNT_USERNAME.strip(),
+                password_hash=generate_password_hash(TEST_ACCOUNT_PASSWORD),
+                is_admin=False, is_approved=True, is_test_account=True, free_api_used=0,
+                llm_model=validate_model_name(TEST_ACCOUNT_MODEL),
+                llm_base_url=normalize_provider_url(TEST_ACCOUNT_BASE_URL),
+                llm_api_key=TEST_ACCOUNT_API_KEY or None)
+    db.session.add(user)
+    db.session.commit()
+    return user
 
 
 def ensure_application_schema():
@@ -198,8 +241,11 @@ def ensure_application_schema():
     with app.app_context():
         db.create_all()
         ensure_user_schema()
+        ensure_moderation_schema()
         if os.getenv("AUTO_SEED_REFERENCE_DATA", "1").strip().lower() not in {"0", "false", "no"}:
             seed_reference_data()
+        if os.getenv("AUTO_SEED_TEST_ACCOUNT", "0").strip().lower() not in {"0", "false", "no"}:
+            ensure_test_account()
 
 
 if os.getenv("AUTO_INIT_DB", "1").strip().lower() not in {"0", "false", "no"}:
@@ -242,6 +288,9 @@ def _prepare_document_for_model(text, max_chars, parsed=None, filename=""):
 
 
 def _attach_processing_meta(result, privacy_meta, document_meta, final_stage="analyze"):
+    normalized = normalize_module_result(result, final_stage)
+    result.clear()
+    result.update(normalized)
     result["privacy_meta"] = privacy_meta
     result["document_meta"] = document_meta
     result["pipeline_trace"] = [
@@ -397,15 +446,15 @@ def save_record(module_type, input_text, result):
 # ===== 首页 =====
 @app.route("/")
 def index():
-    """渲染主页面"""
+    """渲染主页面；管理员账号已剥离到独立控制台。"""
     if current_user.is_authenticated and current_user.is_admin:
         return redirect("/admin")
     return render_template("index.html")
 
 
 @app.route("/admin")
-def admin_portal():
-    """Separate administrator shell; account data remains behind protected APIs."""
+def admin_console():
+    """管理员独立控制台入口。"""
     return render_template("admin.html")
 
 
@@ -1441,6 +1490,10 @@ def _get_llm_config():
             "model": current_user.llm_model or DEFAULT_MODEL,
         }
     # Legacy personal URL/model values must never redirect the shared API key.
+    if current_user.is_authenticated and current_user.is_approved:
+        # Only an administrator can set this user's model without a personal
+        # key. Permit that server-selected identifier, never a user URL.
+        return {"_allow_shared_model": True}
     return {}
 
 
@@ -3001,6 +3054,9 @@ def admin_model_config():
         return jsonify({"error": "配置文件不可写，原运行配置未改变"}), 503
     update_config(api_key=api_key, base_url=base_url, model=model)
     os.environ.update(settings)
+    from core.moderation.audit import log_admin_action
+    log_admin_action('model_config_update', target_type='system', detail=f'模型供应商 {base_url}；模型 {model}；密钥值不记录')
+    db.session.commit()
     return jsonify({"status": "ok", "message": "共享模型配置已保存，空密钥字段保留原密钥"})
 
 

@@ -1,92 +1,65 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="robots" content="noindex, nofollow">
-  <title>明鉴 · 管理中心</title>
-  <link rel="stylesheet" href="/static/css/admin.css?v=20261010accounts1">
-  <script src="/static/js/admin.js?v=20261010accounts1" defer></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>明鉴 · 管理控制台</title>
+<link rel="stylesheet" href="/static/css/admin.css?v=20261010admin2">
 </head>
 <body>
-  <header class="admin-header">
-    <a class="brand" href="/admin"><span class="brand-mark" aria-hidden="true">⚖</span><span><strong>明鉴</strong><small>管理中心</small></span></a>
-    <div class="header-actions">
-      <a href="/">用户登录入口</a>
-      <span id="admin-identity" class="hidden"></span>
-      <button id="admin-logout" type="button" class="hidden">退出登录</button>
+
+<!-- 管理员登录 -->
+<div id="admin-login" class="admin-login">
+  <form class="admin-login-card" onsubmit="event.preventDefault(); adminLogin(); return false;">
+    <div class="admin-brand">&#x2696; 明鉴 · 管理控制台</div>
+    <p class="admin-login-hint">仅限管理员账号登录</p>
+    <label>管理员账号
+      <input id="admin-login-username" autocomplete="username" autofocus>
+    </label>
+    <label>密码
+      <input id="admin-login-password" type="password" autocomplete="current-password">
+    </label>
+    <button class="admin-btn primary" type="submit">登录</button>
+    <p id="admin-login-error" class="admin-error"></p>
+  </form>
+</div>
+
+<!-- 控制台 -->
+<div id="admin-app" class="admin-app hidden">
+  <aside class="admin-side">
+    <div class="admin-side-brand">&#x2696; 明鉴后台</div>
+    <nav id="admin-nav">
+      <button type="button" data-section="dashboard" class="active">概览</button>
+      <button type="button" data-section="users">用户管理</button>
+      <button type="button" data-section="review">内容审核</button>
+      <button type="button" data-section="reports">举报处理</button>
+      <button type="button" data-section="cases">案例库</button>
+      <button type="button" data-section="audit">会话审计</button>
+      <button type="button" data-section="logs">操作日志</button>
+      <button type="button" data-section="system">系统配置</button>
+    </nav>
+    <div class="admin-side-foot">
+      <span id="admin-who"></span>
+      <button type="button" class="admin-btn ghost" onclick="adminLogout()">退出登录</button>
     </div>
-  </header>
-
-  <main class="admin-shell">
-    <section id="admin-login-view" class="login-card" aria-labelledby="login-title">
-      <span class="eyebrow">管理员访问</span>
-      <h1 id="login-title">登录管理中心</h1>
-      <p class="section-note">使用独立管理员账号，管理用户权限、服务配置与自己的账号。</p>
-      <p id="admin-access-note" class="access-note" role="status">正在检查登录状态…</p>
-      <form id="admin-login-form">
-        <label for="admin-login-username">管理员用户名</label>
-        <input id="admin-login-username" name="username" autocomplete="username" required maxlength="80">
-        <label for="admin-login-password">密码</label>
-        <input id="admin-login-password" name="password" type="password" autocomplete="current-password" required>
-        <p id="admin-login-message" class="form-message" role="alert"></p>
-        <button type="submit" class="primary">登录</button>
-      </form>
-      <a class="login-back" href="/">返回用户登录</a>
-    </section>
-
-    <div id="admin-dashboard" class="hidden">
-      <div class="dashboard-intro">
-        <div><span class="eyebrow">明鉴管理中心</span><h1>运行与账号管理</h1><p class="section-note">普通用户与管理员账号分别管理。</p></div>
-        <button id="admin-refresh" type="button">刷新数据</button>
-      </div>
-      <nav class="section-nav" aria-label="管理功能">
-        <a href="#users-section">普通用户</a><a href="#model-section">DeepSeek 设置</a><a href="#account-section">管理员账号</a>
-      </nav>
-      <p id="admin-page-message" class="form-message" role="status" aria-live="polite"></p>
-      <section id="admin-metrics" class="metrics-grid" aria-label="运行统计"></section>
-
-      <section id="users-section" class="admin-card" aria-labelledby="users-title">
-        <div class="card-heading"><div><h2 id="users-title">普通用户</h2><p class="section-note">审批 AI 使用权限，并查看用户的额度状态。</p></div><span id="admin-user-count" class="muted"></span></div>
-        <div class="user-filters">
-          <label class="search-field" for="admin-user-search"><span class="sr-only">搜索用户名</span><input id="admin-user-search" type="search" placeholder="搜索用户名" autocomplete="off"></label>
-          <label for="admin-user-filter"><span class="sr-only">筛选用户状态</span><select id="admin-user-filter"><option value="all">全部用户</option><option value="pending">待审批</option><option value="unlimited">不限次数</option><option value="trial">试用额度</option></select></label>
-        </div>
-        <div id="admin-users-list" class="users-list" aria-live="polite"></div>
-        <details class="test-user-details">
-          <summary>创建普通测试账号</summary>
-          <p class="section-note">新账号将直接获批，可不限次数使用 AI；仅用于需要完整流程测试时。</p>
-          <form id="admin-test-user-form" class="form-grid">
-            <div><label for="test-user-username">测试用户名</label><input id="test-user-username" autocomplete="off" minlength="3" maxlength="80" required></div>
-            <div><label for="test-user-password">测试密码（至少 12 位）</label><input id="test-user-password" type="password" autocomplete="new-password" minlength="12" required></div>
-            <div class="form-footer"><button type="submit">创建测试账号</button><p id="admin-test-user-message" class="form-message" role="status"></p></div>
-          </form>
-        </details>
-      </section>
-
-      <section id="model-section" class="admin-card" aria-labelledby="model-title">
-        <div class="card-heading"><div><h2 id="model-title">全局 DeepSeek 设置</h2><p class="section-note">用于平台提供的 AI 服务。普通用户的个人 API 配置在用户入口中设置。</p></div><span id="admin-model-key-status" class="muted"></span></div>
-        <form id="admin-model-form" class="form-grid">
-          <div class="full-width"><label for="admin-model-key">服务 API Key</label><input id="admin-model-key" type="password" autocomplete="new-password" placeholder="输入 API Key"><small class="field-note">已保存的密钥不会显示；留空保留现有密钥。</small></div>
-          <div><label for="admin-model-base-url">Base URL</label><input id="admin-model-base-url" type="url" value="https://api.deepseek.com/v1" required></div>
-          <div><label for="admin-model-name">默认模型</label><select id="admin-model-name"><option value="deepseek-flash">DeepSeek V4.1 Flash（推荐）</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option><option value="deepseek-chat">DeepSeek Chat（兼容）</option></select></div>
-          <div class="form-footer"><button type="submit" class="primary">保存配置</button><button id="admin-model-test" type="button">测试连接</button><p id="admin-model-message" class="form-message" role="status"></p></div>
-        </form>
-      </section>
-
-      <section id="account-section" class="admin-card" aria-labelledby="account-title">
-        <div class="card-heading"><div><h2 id="account-title">管理员账号</h2><p class="section-note">管理员独立于普通用户列表。账号修改仅作用于当前登录的管理员。</p></div></div>
-        <div id="admin-administrators-list" class="administrators-list"></div>
-        <form id="admin-profile-form" class="form-grid profile-form">
-          <div><label for="admin-profile-username">我的用户名</label><input id="admin-profile-username" autocomplete="username" maxlength="80"><small class="field-note">留空保留当前用户名。</small></div>
-          <div><label for="admin-current-password">当前密码</label><input id="admin-current-password" type="password" autocomplete="current-password" required></div>
-          <div><label for="admin-new-password">新密码（至少 12 位）</label><input id="admin-new-password" type="password" autocomplete="new-password" minlength="12"><small class="field-note">留空保留当前密码。</small></div>
-          <div><label for="admin-confirm-password">确认新密码</label><input id="admin-confirm-password" type="password" autocomplete="new-password" minlength="12"></div>
-          <div class="form-footer"><button type="submit" class="primary">保存我的账号</button><p id="admin-profile-message" class="form-message" role="status"></p></div>
-        </form>
-      </section>
-    </div>
+  </aside>
+  <main class="admin-main">
+    <header class="admin-main-head"><h2 id="admin-section-title">概览</h2></header>
+    <div id="admin-view" class="admin-view"><p class="admin-empty">加载中…</p></div>
   </main>
-  <footer class="admin-footer">明鉴 · 法律智能体</footer>
+</div>
+
+<!-- 模态框 -->
+<div id="admin-modal" class="admin-modal hidden" onclick="if(event.target===this)closeAdminModal()">
+  <div class="admin-modal-body">
+    <div class="admin-modal-head">
+      <h3 id="admin-modal-title"></h3>
+      <button type="button" class="admin-modal-close" onclick="closeAdminModal()" aria-label="关闭">×</button>
+    </div>
+    <div id="admin-modal-content"></div>
+  </div>
+</div>
+
+<script src="/static/js/admin.js?v=20261010review3"></script>
 </body>
 </html>

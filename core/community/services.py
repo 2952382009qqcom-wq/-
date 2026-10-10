@@ -1,8 +1,6 @@
 import hashlib
-import hashlib
 import json
 import re
-from datetime import datetime
 
 from flask import current_app
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -10,9 +8,12 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from core.cases.models import LegalCase
 from core.cases.matching import find_context_cases
 from core.models import Conversation, ConversationMessage, db
+from core.moderation.actions import apply_content_status, queue_content_review
+from core.moderation.models import PendingReview
+from core.moderation.words import decide, describe_hits, scan_text, top_severity
 from core.privacy import RedactionSession, public_redaction_summary
 from core.recommendations.events import record_event
-from core.search.indexing import enqueue_index, process_outbox
+from core.search.indexing import process_outbox
 from core.taxonomy import domain_for_category, infer_legal_domain
 
 from .models import (
@@ -35,6 +36,16 @@ def clean_public_text(value, *, max_length, field_name):
         raise ValueError(f"{field_name}不能超过{max_length}字")
     session = RedactionSession()
     return session.redact(value), public_redaction_summary(session)
+
+
+def _screen_banned_words(text):
+    """违禁词分级筛查。返回 (action, hits, reason, warnings)。
+
+    action: ok 无命中 / reject 直接拒绝 / review 转人工审核 / warn 提示但放行。
+    """
+    action, hits = decide(scan_text(text))
+    warnings = list(dict.fromkeys(hit["word"] for hit in hits))
+    return action, hits, describe_hits(hits), warnings
 
 
 def category_or_error(value):
@@ -75,8 +86,14 @@ def create_post(user_id, data):
     title, title_meta = clean_public_text(data.get("title", ""), max_length=160, field_name="标题")
     body, body_meta = clean_public_text(data.get("body", ""), max_length=12000, field_name="正文")
     post_type = data.get("post_type", "discussion")
-    if post_type not in {"discussion", "legal_help"}:
+    if not isinstance(post_type, str) or post_type not in {"discussion", "legal_help"}:
         raise ValueError("帖子类型无效")
+    action, hits, reason, warnings = _screen_banned_words(f"{title}\n{body}")
+    if action == "reject":
+        raise ValueError("内容包含违禁信息，已拒绝发布：" + "、".join(warnings))
+    draft_token = str(data.get("draft_token") or "")
+    origin = verify_ai_draft_token(draft_token, user_id) if draft_token else None
+    review_state = "pending" if action == "review" else "approved"
     post = CommunityPost(
         author_id=user_id,
         category_id=category.id,
@@ -85,13 +102,25 @@ def create_post(user_id, data):
         body=body,
         is_anonymous=bool(data.get("is_anonymous")),
         help_status="open",
+        status="hidden" if review_state == "pending" else "published",
     )
     db.session.add(post)
     db.session.flush()
+    if review_state == "pending":
+        queue_content_review(
+            "post", post.id,
+            severity=top_severity(hits),
+            reason=reason,
+        )
+        db.session.add(Notification(
+            user_id=user_id,
+            notification_type="moderation",
+            target_type="post",
+            target_id=str(post.id),
+            summary="你的帖子包含敏感词，已提交人工审核",
+        ))
 
-    draft_token = str(data.get("draft_token") or "")
-    if draft_token:
-        origin = verify_ai_draft_token(draft_token, user_id)
+    if origin:
         db.session.add(CommunityPostOrigin(
             post_id=post.id,
             source_conversation_id=origin.get("conversation_id"),
@@ -106,16 +135,62 @@ def create_post(user_id, data):
         legal_domain=domain_for_category(category.slug),
         commit=False,
     )
-    enqueue_index("community_post", post.id, {
-        "title": post.title,
-        "body": post.body,
-        "category": category.slug,
-        "post_type": post.post_type,
-        "status": post.status,
-    })
+    apply_content_status("post", post, post.status)
     db.session.commit()
     process_outbox(limit=10)
-    return post, {"masked_count": title_meta.get("masked_count", 0) + body_meta.get("masked_count", 0)}
+    return post, {
+        "masked_count": title_meta.get("masked_count", 0) + body_meta.get("masked_count", 0),
+        "review_state": review_state,
+        "warnings": warnings,
+    }
+
+
+def update_post(post, data):
+    """Screen the complete proposed edit before changing any stored fields."""
+    if post.status == "deleted":
+        raise ValueError("已删除的帖子不能修改")
+    help_status = post.help_status
+    if "help_status" in data and post.post_type == "legal_help":
+        if not isinstance(data["help_status"], str) or data["help_status"] not in {"open", "answered", "resolved"}:
+            raise ValueError("求助状态无效")
+        help_status = data["help_status"]
+
+    title, body = post.title, post.body
+    title_meta, body_meta = {}, {}
+    changed_content = "title" in data or "body" in data
+    action, hits, reason, warnings = "ok", [], "", []
+    if changed_content:
+        if "title" in data:
+            title, title_meta = clean_public_text(data["title"], max_length=160, field_name="标题")
+        if "body" in data:
+            body, body_meta = clean_public_text(data["body"], max_length=12000, field_name="正文")
+        action, hits, reason, warnings = _screen_banned_words(f"{title}\n{body}")
+        if action == "reject":
+            raise ValueError("内容包含违禁信息，已拒绝发布：" + "、".join(warnings))
+
+    pending_review = PendingReview.query.filter_by(
+        target_type="post", target_id=str(post.id), status="pending"
+    ).order_by(PendingReview.id.desc()).first()
+    needs_review = bool(pending_review) or (changed_content and (action == "review" or post.status == "hidden"))
+    post.title, post.body, post.help_status = title, body, help_status
+    if changed_content and needs_review:
+        # A cleared word match does not let the author undo a pending/manual hold.
+        if not reason:
+            reason = "内容已修改，等待管理员复核"
+            if pending_review and pending_review.reason:
+                reason += "；原审核原因：" + pending_review.reason
+        queue_content_review("post", post.id, severity=top_severity(hits) or "medium", reason=reason)
+    if needs_review:
+        apply_content_status("post", post, "hidden")
+    else:
+        apply_content_status("post", post, post.status)
+    db.session.commit()
+    process_outbox(limit=10)
+    return post, {
+        "masked_count": title_meta.get("masked_count", 0) + body_meta.get("masked_count", 0),
+        "review_state": "pending" if needs_review else ("approved" if post.status == "published" else "hidden"),
+        "warnings": warnings,
+    }
 
 
 def create_comment(user_id, post, data):
@@ -128,26 +203,45 @@ def create_comment(user_id, post, data):
             raise ValueError("回复的评论不存在")
         if parent.parent_id:
             parent = CommunityComment.query.get(parent.parent_id)
+    action, hits, reason, warnings = _screen_banned_words(body)
+    if action == "reject":
+        raise ValueError("内容包含违禁信息，已拒绝发布：" + "、".join(warnings))
+    review_state = "pending" if action == "review" else "approved"
     comment = CommunityComment(
         post_id=post.id,
         author_id=user_id,
         parent_id=parent.id if parent else None,
         reply_to_user_id=parent.author_id if parent else None,
         body=body,
+        status="hidden" if review_state == "pending" else "published",
     )
-    post.comment_count += 1
     db.session.add(comment)
     db.session.flush()
-    recipient = parent.author_id if parent else post.author_id
-    if recipient and recipient != user_id:
+    if review_state == "pending":
+        queue_content_review(
+            "comment", comment.id,
+            severity=top_severity(hits),
+            reason=reason,
+        )
         db.session.add(Notification(
-            user_id=recipient,
-            actor_id=user_id,
-            notification_type="reply" if parent else "comment",
+            user_id=user_id,
+            notification_type="moderation",
             target_type="post",
             target_id=str(post.id),
-            summary=f"你的帖子《{post.title[:48]}》有了新回复",
+            summary="你的回复包含敏感词，已提交人工审核",
         ))
+    else:
+        post.comment_count += 1
+        recipient = parent.author_id if parent else post.author_id
+        if recipient and recipient != user_id:
+            db.session.add(Notification(
+                user_id=recipient,
+                actor_id=user_id,
+                notification_type="reply" if parent else "comment",
+                target_type="post",
+                target_id=str(post.id),
+                summary=f"你的帖子《{post.title[:48]}》有了新回复",
+            ))
     record_event(
         user_id,
         "comment",
@@ -157,7 +251,7 @@ def create_comment(user_id, post, data):
         commit=False,
     )
     db.session.commit()
-    return comment
+    return comment, {"review_state": review_state, "warnings": warnings}
 
 
 def _draft_serializer():

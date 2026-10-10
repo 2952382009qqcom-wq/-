@@ -48,6 +48,7 @@ def configure_local_environment(port=5090):
         "DATABASE_URL": "sqlite:///" + (instance / "local-demo.db").as_posix(),
         "AUTO_INIT_DB": "1",
         "AUTO_SEED_REFERENCE_DATA": "1",
+        "AUTO_SEED_TEST_ACCOUNT": "0",
         "RATELIMIT_STORAGE_URI": "memory://",
         "SOCKETIO_REDIS_URL": "",
         "MEILISEARCH_URL": "",
@@ -93,7 +94,7 @@ def provision_local_accounts(values, account_file=None, port=5090):
         if test_user is None:
             test_user = User(username=test_name,
                              password_hash=generate_password_hash(values["MINGJIAN_LOCAL_TEST_PASSWORD"]),
-                             is_admin=False, is_approved=True, free_api_used=0)
+                             is_admin=False, is_approved=True, is_test_account=True, free_api_used=0)
             db.session.add(test_user)
         # Existing passwords, renamed administrators and approval decisions are
         # deliberately unchanged on subsequent starts.

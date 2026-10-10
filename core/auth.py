@@ -2,10 +2,12 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from core.models import db, User, AnalysisRecord
+from core.moderation.audit import log_admin_action
 from datetime import datetime, timedelta
 import os
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from core.model_settings import validate_model_name
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -31,6 +33,7 @@ def user_info(user):
         'username': user.username,
         'is_admin': user.is_admin,
         'is_approved': user.is_approved,
+        'is_test_account': bool(getattr(user, 'is_test_account', False)),
         'approval_requested': user.approval_requested,
         'approval_requested_at': user.approval_requested_at.isoformat() if user.approval_requested_at else '',
         'llm_model': user.llm_model or '',
@@ -112,6 +115,8 @@ def admin_login():
         return jsonify({'error': '该账号没有管理员权限', 'code': 'ADMIN_ACCOUNT_REQUIRED'}), 403
 
     login_user(user)
+    log_admin_action('admin_login', target_type='user', target_id=str(user.id))
+    db.session.commit()
     return jsonify({'status': 'ok', 'user': user_info(user)})
 
 
@@ -191,6 +196,7 @@ def admin_profile():
         current_user.username = username
     if password:
         current_user.password_hash = generate_password_hash(password)
+    log_admin_action('admin_profile_update', target_type='user', target_id=str(current_user.id), detail='管理员修改本人账号资料')
     try:
         db.session.commit()
     except IntegrityError:
@@ -220,10 +226,12 @@ def create_test_user():
         password_hash=generate_password_hash(password),
         is_admin=False,
         is_approved=True,
+        is_test_account=True,
         approval_requested=False,
         free_api_used=0,
     )
     db.session.add(user)
+    log_admin_action('test_user_create', target_type='user', target_id=username, detail='创建独立普通测试账号')
     try:
         db.session.commit()
     except IntegrityError:
@@ -258,6 +266,7 @@ def approve_user(user_id):
         return jsonify({'error': '管理员账号不能通过普通用户审核接口修改'}), 400
     user.is_approved = True
     user.approval_requested = False
+    log_admin_action('user_approve', target_type='user', target_id=str(user.id), detail=f'通过 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'用户 {user.username} 已通过审核'})
 
@@ -272,6 +281,7 @@ def reject_user(user_id):
     if user.is_admin:
         return jsonify({'error': '管理员账号不能通过普通用户审核接口修改'}), 400
     user.approval_requested = False
+    log_admin_action('user_reject', target_type='user', target_id=str(user.id), detail=f'驳回 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已驳回用户 {user.username} 的申请'})
 
@@ -396,6 +406,7 @@ def delete_user(user_id):
         column = "reporter_id" if model is CommunityReport else "user_id"
         model.query.filter_by(**{column: user.id}).delete(synchronize_session=False)
     AnalysisRecord.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    log_admin_action('user_delete', target_type='user', target_id=str(user.id), detail=f'删除 {user.username}')
     db.session.delete(user)
     db.session.commit()
     storage = LocalAttachmentStorage()
@@ -422,7 +433,13 @@ def set_user_model(user_id):
     llm_model = _text_field(data, 'llm_model')
     if llm_model is None:
         return jsonify({'error': '模型名称必须是文本'}), 400
+    if llm_model:
+        try:
+            llm_model = validate_model_name(llm_model)
+        except ValueError as error:
+            return jsonify({'error': str(error)}), 400
     user.llm_model = llm_model or None
+    log_admin_action('user_set_model', target_type='user', target_id=str(user.id), detail=f'{user.username} → {llm_model or "默认"}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已更新用户 {user.username} 的模型'})
 
@@ -440,6 +457,7 @@ def revoke_user(user_id):
     user.is_approved = False
     user.approval_requested = False
     user.llm_model = None
+    log_admin_action('user_revoke', target_type='user', target_id=str(user.id), detail=f'撤销 {user.username}')
     db.session.commit()
     return jsonify({'status': 'ok', 'message': f'已取消用户 {user.username} 的使用权限'})
 

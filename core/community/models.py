@@ -124,6 +124,7 @@ class CommunityReport(db.Model):
     status = db.Column(db.String(16), nullable=False, default="pending")
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     resolved_at = db.Column(db.DateTime, nullable=True)
+    resolved_by = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
 
 class ModerationAction(db.Model):

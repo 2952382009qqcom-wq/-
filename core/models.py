@@ -18,6 +18,7 @@ class User(UserMixin, db.Model):
     llm_api_key = db.Column(db.String(512), nullable=True)
     llm_base_url = db.Column(db.String(255), nullable=True)
     free_api_used = db.Column(db.Integer, nullable=False, default=0)
+    is_test_account = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     records = db.relationship('AnalysisRecord', backref='user', lazy='dynamic')

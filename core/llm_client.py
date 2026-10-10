@@ -86,7 +86,8 @@ def _prepare_request(config_override=None, model_override=''):
             return None
         config = _merged_config(config_override)
         _api_key, personal = _selected_api_key(config_override)
-        model = validate_model_name(model_override) if personal and model_override else config['model']
+        trusted_shared_override = isinstance(config_override, dict) and config_override.get('_allow_shared_model') is True
+        model = validate_model_name(model_override) if (personal or trusted_shared_override) and model_override else config['model']
         return _client_for_config(config), model
 
 
