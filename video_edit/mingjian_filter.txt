@@ -1,0 +1,50 @@
+[0:v]split=6[s0][s1][s2][s3][s4][s5];
+[s0]trim=start=0:end=4.8,setpts=(PTS-STARTPTS)/2.4,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v0];
+[s1]trim=start=12:end=24,setpts=(PTS-STARTPTS)/3,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v1];
+[s2]trim=start=28:end=60,setpts=(PTS-STARTPTS)/4,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v2];
+[s3]trim=start=60:end=84,setpts=(PTS-STARTPTS)/4.8,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v3];
+[s4]trim=start=84:end=100,setpts=(PTS-STARTPTS)/4,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v4];
+[s5]trim=start=100:end=134.5,setpts=(PTS-STARTPTS)/7.666667,fps=30,scale=940:1440,eq=contrast=1.02:saturation=1.04[v5];
+[v0][v1][v2][v3][v4][v5]concat=n=6:v=1:a=0,setpts=PTS-STARTPTS[screen];
+
+color=c=0x150F18:s=1080x1920:r=30:d=27.5[corebg];
+[corebg]drawbox=x=0:y=0:w=1080:h=250:color=0x21151D:t=fill,
+drawbox=x=48:y=258:w=984:h=1484:color=black@0.45:t=fill,
+drawbox=x=64:y=274:w=952:h=1452:color=0xB85C62@0.72:t=4,
+drawbox=x=70:y=229:w=220:h=6:color=0xB85C62:t=fill[frame];
+[frame][screen]overlay=x=70:y=280:shortest=1[placed];
+[placed]drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='明鉴 · AI 法律助手':fontcolor=0xFFF8EF:fontsize=54:x=70:y=70,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='登录安全 · 即刻进入':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,0,2)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='自然语言提问 · 迅速理解需求':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,2,6)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='AI 法律分析 · 支持多轮追问':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,6,14)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='专业工具矩阵 · 一站式辅助研判':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,14,19)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='智能法律检索 · 高效定位依据':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,19,23)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='证据风险研判 · 关键问题一目了然':fontcolor=0xE8BBC0:fontsize=34:x=70:y=158:enable='between(t,23,27.5)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='以法为镜 · 明辨是非':fontcolor=0xD8CED5:fontsize=28:x=70:y=1780,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='产品功能演示':fontcolor=0x8F7E88:fontsize=24:x=824:y=1784,
+drawbox=x=70:y=1842:w=940:h=5:color=white@0.12:t=fill,
+drawbox=x=70:y=1842:w='940*t/27.5':h=5:color=0xC76870:t=fill[core];
+
+color=c=0x150F18:s=1080x1920:r=30:d=1.8[introbg];
+[introbg]drawbox=x=86:y=0:w=12:h=1920:color=0xB85C62:t=fill,
+drawbox=x=98:y=0:w=4:h=1920:color=0xE7BFC1@0.45:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='明鉴':fontcolor=0xFFF8EF:fontsize=126:x=148:y=650,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='AI 法律助手':fontcolor=0xD9AFB4:fontsize=54:x=154:y=815,
+drawbox=x=154:y=914:w=178:h=7:color=0xB85C62:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='以法为镜 · 明辨是非':fontcolor=0xCFC3CB:fontsize=34:x=154:y=968[intro];
+
+color=c=0x150F18:s=1080x1920:r=30:d=1.8[outrobg];
+[outrobg]drawbox=x=0:y=0:w=1080:h=1920:color=0x1A1119:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='明鉴':fontcolor=0xFFF8EF:fontsize=120:x=(w-text_w)/2:y=650,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='AI 驱动的一站式法律辅助平台':fontcolor=0xE6B8BD:fontsize=38:x=(w-text_w)/2:y=820,
+drawbox=x=390:y=930:w=300:h=6:color=0xB85C62:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='以法为镜 · 明辨是非':fontcolor=0xCFC3CB:fontsize=32:x=(w-text_w)/2:y=990[outro];
+
+[intro][core]xfade=transition=fade:duration=0.35:offset=1.45[x1];
+[x1][outro]xfade=transition=fade:duration=0.35:offset=28.6,format=yuv420p[vout];
+
+sine=frequency=110:sample_rate=48000:duration=30.4,volume=0.026[p1];
+sine=frequency=164.81:sample_rate=48000:duration=30.4,volume=0.012[p2];
+sine=frequency=55:sample_rate=48000:duration=30.4,volume='0.065*exp(-8*mod(t,0.75))':eval=frame[pulse];
+anoisesrc=color=pink:amplitude=0.003:sample_rate=48000:duration=30.4[air];
+[p1][p2][pulse][air]amix=inputs=4:normalize=0,lowpass=f=1600,afade=t=in:st=0:d=1,afade=t=out:st=29.2:d=1.2,loudnorm=I=-22:TP=-3:LRA=7,alimiter=limit=0.8,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]

@@ -1,0 +1,107 @@
+[0:v]split=4[src1][src2][src3][src4];
+
+[src1]trim=start=12:end=24,setpts=(PTS-STARTPTS)/1.764706,fps=30,scale=720:-2:flags=lanczos,eq=contrast=1.03:saturation=1.05,format=rgba,pad=760:1168:20:20:color=0x090B12,drawbox=x=0:y=0:w=iw:h=ih:color=0xD69A8F@0.85:t=4,fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=6.35:d=0.45:alpha=1,rotate=angle='-0.035+0.035*min(t/0.65,1)':ow=iw+50:oh=ih+50:c=none[phone1];
+[src2]trim=start=28:end=51.8,setpts=(PTS-STARTPTS)/3.5,fps=30,scale=700:-2:flags=lanczos,eq=contrast=1.03:saturation=1.04,format=rgba,pad=740:1132:20:20:color=0x090B12,drawbox=x=0:y=0:w=iw:h=ih:color=0xD69A8F@0.85:t=4,fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=6.35:d=0.45:alpha=1,rotate=angle='0.04-0.04*min(t/0.65,1)':ow=iw+50:oh=ih+50:c=none[phone2];
+[src3]trim=start=60:end=80.4,setpts=(PTS-STARTPTS)/3,fps=30,scale=660:-2:flags=lanczos,eq=contrast=1.04:saturation=1.06,format=rgba,pad=700:1070:20:20:color=0x090B12,drawbox=x=0:y=0:w=iw:h=ih:color=0xD69A8F@0.85:t=4,fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=6.35:d=0.45:alpha=1,rotate=angle='-0.045+0.045*min(t/0.65,1)':ow=iw+50:oh=ih+50:c=none[phone3];
+[src4]trim=start=100:end=116.5,setpts=(PTS-STARTPTS)/3,fps=30,scale=760:-2:flags=lanczos,eq=contrast=1.04:saturation=1.04,format=rgba,pad=800:1220:20:20:color=0x090B12,drawbox=x=0:y=0:w=iw:h=ih:color=0xD69A8F@0.85:t=4,fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=5.05:d=0.45:alpha=1[phone4];
+
+color=c=0x0B0710:s=1080x1920:r=30:d=3.2[introbg];
+[introbg]drawgrid=w=90:h=90:t=1:c=0xB85C62@0.13,
+drawbox=x='-420+620*t':y=0:w=300:h=1920:color=0x8F3848@0.12:t=fill,
+drawbox=x=92:y=540:w='min(760,760*t/1.1)':h=7:color=0xC96B72:t=fill,
+drawbox=x=92:y=1040:w='min(430,430*max(t-0.7,0)/0.9)':h=3:color=0xE7BFC1@0.7:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='明 鉴':fontcolor=0xFFF8EF:fontsize=150:x=92:y=620:alpha='if(lt(t,0.25),0,min(1,(t-0.25)/0.45))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='AI 法律助手':fontcolor=0xE7BFC1:fontsize=58:x=100:y=820:alpha='if(lt(t,0.65),0,min(1,(t-0.65)/0.45))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='以法为镜 · 明辨是非':fontcolor=0xCFC3CB:fontsize=36:x=102:y=930:alpha='if(lt(t,1.0),0,min(1,(t-1.0)/0.5))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='LEGAL INTELLIGENCE':fontcolor=0x8F7E88:fontsize=24:x=100:y=1010:alpha='if(lt(t,1.2),0,min(1,(t-1.2)/0.45))',
+vignette=PI/5[intro];
+
+color=c=0x0C0810:s=1080x1920:r=30:d=6.8[s1bg];
+[s1bg]drawgrid=w=96:h=96:t=1:c=0xB85C62@0.10,
+drawbox=x=0:y=0:w=1080:h=270:color=0x21141D@0.92:t=fill,
+drawbox=x='-260+280*t':y=270:w=170:h=1320:color=0xB85C62@0.08:t=fill,
+drawbox=x=72:y=128:w=12:h=88:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='01  自然语言提问':fontcolor=0xFFF8EF:fontsize=56:x=110:y=120,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='像聊天一样，说清你的问题':fontcolor=0xD7B4B8:fontsize=31:x=112:y=200,
+drawbox=x=80:y=1648:w=920:h=142:color=0x21141D@0.92:t=fill,
+drawbox=x=80:y=1648:w='min(920,920*t/6.2)':h=5:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='描述事实  →  识别争点  →  形成建议':fontcolor=0xF1DDE0:fontsize=34:x=(w-text_w)/2:y=1694[scene1base];
+[scene1base][phone1]overlay=x='(W-w)/2':y='330+90*pow(max(0,1-t/0.7),3)':format=auto:shortest=1,zoompan=z='min(1.055,1+0.00027*on)':d=1:s=1080x1920:fps=30[scene1];
+
+color=c=0x100A12:s=1080x1920:r=30:d=6.8[s2bg];
+[s2bg]drawgrid=w=120:h=120:t=1:c=0xB85C62@0.10,
+drawbox=x=0:y=0:w=1080:h=315:color=0x23161E@0.95:t=fill,
+drawbox=x=72:y=110:w=230:h=7:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='AI 梳理争议焦点':fontcolor=0xFFF8EF:fontsize=62:x=72:y=140,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='答案不是终点，依据与路径同样重要':fontcolor=0xD7B4B8:fontsize=30:x=76:y=232,
+drawbox=x=86:y=1555:w=908:h=210:color=0x20131B@0.94:t=fill,
+drawbox=x=112:y=1590:w='min(20,20*max(t-0.4,0)/0.25)':h=46:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='争议焦点':fontcolor=0xFFF8EF:fontsize=34:x=150:y=1592:alpha='min(1,max(0,(t-0.45)/0.35))',
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='法律依据':fontcolor=0xFFF8EF:fontsize=34:x=390:y=1592:alpha='min(1,max(0,(t-0.9)/0.35))',
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='行动建议':fontcolor=0xFFF8EF:fontsize=34:x=630:y=1592:alpha='min(1,max(0,(t-1.35)/0.35))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='层层展开 · 重点信息一目了然':fontcolor=0xC8A9AD:fontsize=29:x=150:y=1672[scene2base];
+[scene2base][phone2]overlay=x='(W-w)/2':y='340+100*pow(max(0,1-t/0.7),3)':format=auto:shortest=1,zoompan=z='min(1.045,1+0.00022*on)':d=1:s=1080x1920:fps=30[scene2];
+
+color=c=0x0A0710:s=1080x1920:r=30:d=6.8[s3bg];
+[s3bg]drawgrid=w=100:h=100:t=1:c=0xB85C62@0.11,
+drawbox=x=0:y=0:w=1080:h=300:color=0x21141D@0.94:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='02  专业工具矩阵':fontcolor=0xFFF8EF:fontsize=58:x=72:y=125,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='一站式完成检索、审查与研判':fontcolor=0xD7B4B8:fontsize=31:x=76:y=211,
+drawbox=x=68:y=520:w=250:h=118:color=0x281820@0.94:t=fill,
+drawbox=x=68:y=670:w=250:h=118:color=0x281820@0.94:t=fill,
+drawbox=x=68:y=820:w=250:h=118:color=0x281820@0.94:t=fill,
+drawbox=x=68:y=970:w=250:h=118:color=0x281820@0.94:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='法律检索':fontcolor=0xF7E8E9:fontsize=34:x=105:y=557:alpha='min(1,max(0,(t-0.35)/0.3))',
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='文书审查':fontcolor=0xF7E8E9:fontsize=34:x=105:y=707:alpha='min(1,max(0,(t-0.75)/0.3))',
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='证据分析':fontcolor=0xF7E8E9:fontsize=34:x=105:y=857:alpha='min(1,max(0,(t-1.15)/0.3))',
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='策略生成':fontcolor=0xF7E8E9:fontsize=34:x=105:y=1007:alpha='min(1,max(0,(t-1.55)/0.3))',
+drawbox=x=68:y=1515:w=944:h=190:color=0x21141D@0.92:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='从问题到工具，从结论到依据':fontcolor=0xFFF8EF:fontsize=39:x=(w-text_w)/2:y=1565,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='让专业判断拥有清晰路径':fontcolor=0xC8A9AD:fontsize=29:x=(w-text_w)/2:y=1630[scene3base];
+[scene3base][phone3]overlay=x='330+75*pow(max(0,1-t/0.7),3)':y=370:format=auto:shortest=1,zoompan=z='min(1.04,1+0.0002*on)':d=1:s=1080x1920:fps=30[scene3];
+
+color=c=0x0C0810:s=1080x1920:r=30:d=5.5[s4bg];
+[s4bg]drawgrid=w=96:h=96:t=1:c=0xB85C62@0.10,
+drawbox=x=0:y=0:w=1080:h=320:color=0x21141D@0.95:t=fill,
+drawbox=x=72:y=112:w=12:h=116:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='关键风险  清晰呈现':fontcolor=0xFFF8EF:fontsize=60:x=112:y=118,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='重点结论可追溯，下一步更明确':fontcolor=0xD7B4B8:fontsize=31:x=115:y=214,
+drawbox=x=80:y=1650:w=920:h=126:color=0x21141D@0.94:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='识别风险 · 定位依据 · 明确行动':fontcolor=0xF1DDE0:fontsize=35:x=(w-text_w)/2:y=1690[scene4base];
+[scene4base][phone4]overlay=x='(W-w)/2':y='345+80*pow(max(0,1-t/0.65),3)':format=auto:shortest=1,zoompan=z='min(1.065,1+0.0004*on)':d=1:s=1080x1920:fps=30[scene4];
+
+color=c=0x0B0710:s=1080x1920:r=30:d=4[outrobg];
+[outrobg]drawgrid=w=90:h=90:t=1:c=0xB85C62@0.12,
+drawbox=x='-360+440*t':y=0:w=260:h=1920:color=0x8F3848@0.12:t=fill,
+drawbox=x=305:y=985:w='min(470,470*max(t-0.5,0)/0.9)':h=5:color=0xC96B72:t=fill,
+drawtext=fontfile='C\:/Windows/Fonts/msyhbd.ttc':text='明 鉴':fontcolor=0xFFF8EF:fontsize=140:x=(w-text_w)/2:y=610:alpha='min(1,t/0.5)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='AI 驱动的一站式法律辅助平台':fontcolor=0xE7BFC1:fontsize=39:x=(w-text_w)/2:y=805:alpha='min(1,max(0,(t-0.35)/0.45))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='以法为镜 · 明辨是非':fontcolor=0xCFC3CB:fontsize=34:x=(w-text_w)/2:y=900:alpha='min(1,max(0,(t-0.75)/0.45))',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='让每一次判断更有依据':fontcolor=0x8F7E88:fontsize=28:x=(w-text_w)/2:y=1050:alpha='min(1,max(0,(t-1.1)/0.45))',
+vignette=PI/5[outro];
+
+[intro][scene1]xfade=transition=smoothleft:duration=0.45:offset=2.75[x1];
+[x1][scene2]xfade=transition=slideleft:duration=0.45:offset=9.10[x2];
+[x2][scene3]xfade=transition=smoothup:duration=0.45:offset=15.45[x3];
+[x3][scene4]xfade=transition=wipeleft:duration=0.45:offset=21.80[x4];
+[x4][outro]xfade=transition=fadeblack:duration=0.45:offset=26.85[finalbase];
+[finalbase]drawbox=x=110:y=1803:w=860:h=72:color=black@0.52:t=fill:enable='between(t,0.25,30.5)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='面向真实法律场景的智能辅助平台':fontcolor=white:fontsize=32:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=1820:enable='between(t,0.25,5.0)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='描述问题，快速梳理争议焦点与法律依据':fontcolor=white:fontsize=32:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=1820:enable='between(t,5.2,12.7)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='从智能问答到检索、审查与证据研判':fontcolor=white:fontsize=32:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=1820:enable='between(t,12.9,21.2)',
+drawtext=fontfile='C\:/Windows/Fonts/msyh.ttc':text='让每一次判断更有依据':fontcolor=white:fontsize=32:borderw=2:bordercolor=black@0.7:x=(w-text_w)/2:y=1820:enable='between(t,23.9,30.5)',
+format=yuv420p[vout];
+
+[1:a]aresample=48000,volume=1.2,adelay=200:all=1[v1];
+[2:a]aresample=48000,volume=1.18,adelay=5200:all=1[v2];
+[3:a]aresample=48000,volume=1.16,adelay=12900:all=1[v3];
+[4:a]aresample=48000,volume=1.2,adelay=23900:all=1[v4];
+sine=frequency=82:sample_rate=48000:duration=30.85,volume=0.025[bed1];
+sine=frequency=123:sample_rate=48000:duration=30.85,volume=0.010[bed2];
+sine=frequency=48:sample_rate=48000:duration=30.85,volume='if(isnan(t),0,0.045*exp(-7*mod(t,0.8)))':eval=frame[pulse];
+anoisesrc=color=pink:amplitude=0.0025:sample_rate=48000:duration=30.85[air];
+sine=frequency=880:sample_rate=48000:duration=0.08,volume=0.11,adelay=2750:all=1[c1];
+sine=frequency=980:sample_rate=48000:duration=0.08,volume=0.11,adelay=9100:all=1[c2];
+sine=frequency=1080:sample_rate=48000:duration=0.08,volume=0.11,adelay=15450:all=1[c3];
+sine=frequency=1180:sample_rate=48000:duration=0.08,volume=0.11,adelay=21800:all=1[c4];
+[v1][v2][v3][v4][bed1][bed2][pulse][air][c1][c2][c3][c4]amix=inputs=12:normalize=0,highpass=f=45,lowpass=f=14500,afade=t=in:st=0:d=0.5,afade=t=out:st=29.8:d=1.0,loudnorm=I=-15:TP=-1.5:LRA=8,alimiter=limit=0.93,aformat=sample_fmts=fltp:channel_layouts=stereo[aout]
