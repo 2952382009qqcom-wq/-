@@ -20,9 +20,9 @@ def main():
         parser.error("username must be 3..80 characters")
     if not os.getenv("DATABASE_URL"):
         parser.error("DATABASE_URL must be explicitly configured; no default database is chosen")
-    password = getpass.getpass("Test account password (12+ characters): ")
-    if len(password) < 12 or password != getpass.getpass("Confirm test password: "):
-        parser.error("password is too short or confirmation differs")
+    password = getpass.getpass("Test account password: ")
+    if not password or password != getpass.getpass("Confirm test password: "):
+        parser.error("password is empty or confirmation differs")
     os.environ["AUTO_INIT_DB"] = "0"
     os.environ["AUTO_SEED_REFERENCE_DATA"] = "0"
     import app as application

@@ -36,9 +36,6 @@ def configure_local_environment(port=5090):
     for key in ("MINGJIAN_LOCAL_ADMIN_USERNAME", "MINGJIAN_LOCAL_TEST_USERNAME"):
         if not 3 <= len(values[key]) <= 80 or values[key] != values[key].strip():
             raise RuntimeError(f"{key} must be 3..80 characters without surrounding whitespace")
-    for key in ("MINGJIAN_LOCAL_ADMIN_PASSWORD", "MINGJIAN_LOCAL_TEST_PASSWORD"):
-        if len(values[key]) < 12:
-            raise RuntimeError(f"{key} must contain at least 12 characters")
     os.chmod(settings_file, 0o600)
     instance = ROOT / "instance"
     instance.mkdir(exist_ok=True)

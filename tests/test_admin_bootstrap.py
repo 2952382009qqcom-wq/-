@@ -58,11 +58,17 @@ class BootstrapSafetyTests(unittest.TestCase):
         self.assertFalse(user.is_admin)
         self.assertFalse(user.is_approved)
 
-    def test_first_admin_requires_strong_password(self):
-        with mock.patch.dict(os.environ, {"ADMIN_USERNAME": "fresh-admin", "ADMIN_PASSWORD": "short"}):
-            with self.assertRaisesRegex(RuntimeError, "12"):
+    def test_first_admin_rejects_empty_password_but_accepts_short(self):
+        with mock.patch.dict(os.environ, {"ADMIN_USERNAME": "fresh-empty-admin", "ADMIN_PASSWORD": ""}):
+            with self.assertRaisesRegex(RuntimeError, "ADMIN_PASSWORD"):
                 app_module.ensure_initial_administrator()
         self.assertIsNone(User.query.filter_by(is_admin=True).first())
+        name = "fresh-short-" + uuid.uuid4().hex[:8]
+        with mock.patch.dict(os.environ, {"ADMIN_USERNAME": name, "ADMIN_PASSWORD": "short"}):
+            user, created = app_module.ensure_initial_administrator()
+            self.ids.append(user.id)
+        self.assertTrue(created)
+        self.assertTrue(check_password_hash(user.password_hash, "short"))
 
     def test_first_admin_creation_is_idempotent(self):
         name = "first-" + uuid.uuid4().hex[:8]

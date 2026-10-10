@@ -185,8 +185,6 @@ def admin_profile():
         return jsonify({'error': '当前密码错误', 'code': 'CURRENT_PASSWORD_INCORRECT'}), 401
     if username and (len(username) < 3 or len(username) > 80):
         return jsonify({'error': '用户名需为3至80个字符'}), 400
-    if password and len(password) < 12:
-        return jsonify({'error': '管理员密码至少12个字符'}), 400
     if username and User.query.filter(User.username == username, User.id != current_user.id).first():
         return jsonify({'error': '用户名已存在'}), 409
 
@@ -216,8 +214,8 @@ def create_test_user():
         return jsonify({'error': '用户名和密码必须是文本'}), 400
     if not username or len(username) < 3 or len(username) > 80:
         return jsonify({'error': '用户名需为3至80个字符'}), 400
-    if not password or len(password) < 12:
-        return jsonify({'error': '测试账号密码至少12个字符'}), 400
+    if not password:
+        return jsonify({'error': '测试账号密码不能为空'}), 400
     if User.query.filter_by(username=username).first():
         return jsonify({'error': '用户名已存在，请为测试账号使用独立用户名'}), 409
 

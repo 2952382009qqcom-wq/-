@@ -354,14 +354,14 @@ function confirmUserModel(id) {
 function openTestUserForm() {
   openAdminModal('新建普通测试账号', '<p class="admin-note">不限应用内次数，没有管理员权限。不要在公开材料中放入真实密码。</p>'
     + '<label class="admin-field">用户名<input id="test-user-name" minlength="3" maxlength="80"></label>'
-    + '<label class="admin-field">密码（至少12位）<input id="test-user-password" type="password" autocomplete="new-password"></label>'
+    + '<label class="admin-field">密码<input id="test-user-password" type="password" autocomplete="new-password"></label>'
     + '<button class="admin-btn primary" onclick="createTestUser()">创建测试账号</button>');
 }
 
 async function createTestUser() {
   const username = $('test-user-name').value.trim();
   const password = $('test-user-password').value;
-  if (username.length < 3 || password.length < 12) return toast('用户名至少3位，密码至少12位', true);
+  if (username.length < 3 || !password) return toast('用户名至少3位，密码不能为空', true);
   try {
     await api('/api/admin/test-users', { method: 'POST', body: JSON.stringify({ username, password }) });
     closeAdminModal(); toast('测试账号已创建'); renderUsers();
@@ -817,7 +817,7 @@ async function renderSystem() {
       + '<div class="admin-form">'
       + '<label class="admin-field">用户名<input id="profile-name" value="' + esc(state.user.username) + '"></label>'
       + '<label class="admin-field">当前密码<input id="profile-current" type="password" autocomplete="current-password"></label>'
-      + '<label class="admin-field">新密码（至少12位，留空不变）<input id="profile-new" type="password" autocomplete="new-password"></label>'
+      + '<label class="admin-field">新密码（留空不变）<input id="profile-new" type="password" autocomplete="new-password"></label>'
       + '<label class="admin-field">确认新密码<input id="profile-confirm" type="password" autocomplete="new-password"></label>'
       + '</div><button class="admin-btn primary" onclick="saveAdminProfile()">保存本人账号</button>';
   } catch (e) {
@@ -908,8 +908,8 @@ async function saveAdminProfile() {
   const username = $('profile-name').value.trim();
   const current_password = $('profile-current').value;
   const password = $('profile-new').value;
-  if (!current_password || password !== $('profile-confirm').value || (password && password.length < 12)) {
-    return toast('请填写当前密码，新密码至少12位且两次一致', true);
+  if (!current_password || password !== $('profile-confirm').value) {
+    return toast('请填写当前密码，新密码两次输入需一致', true);
   }
   try {
     const data = await api('/api/admin/profile', { method: 'POST', body: JSON.stringify({ username, current_password, password }) });

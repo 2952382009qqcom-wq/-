@@ -71,11 +71,10 @@ class TestAccountSafetyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app_module.ensure_test_account()
 
-    def test_missing_or_weak_password_does_not_create_account(self):
-        for password in ("", "123456"):
-            with mock.patch.object(app_module, "TEST_ACCOUNT_PASSWORD", password):
-                with self.assertRaisesRegex(RuntimeError, "12"):
-                    app_module.ensure_test_account()
+    def test_empty_password_does_not_create_account(self):
+        with mock.patch.object(app_module, "TEST_ACCOUNT_PASSWORD", ""):
+            with self.assertRaisesRegex(RuntimeError, "TEST_ACCOUNT_PASSWORD"):
+                app_module.ensure_test_account()
         self.assertIsNone(User.query.filter_by(username=self.name).first())
 
 

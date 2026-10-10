@@ -208,7 +208,7 @@ def ensure_moderation_schema():
 
 
 TEST_ACCOUNT_USERNAME = os.getenv("TEST_ACCOUNT_USERNAME", "mj123")
-TEST_ACCOUNT_PASSWORD = os.getenv("TEST_ACCOUNT_PASSWORD", "")
+TEST_ACCOUNT_PASSWORD = os.getenv("TEST_ACCOUNT_PASSWORD", "123456")
 TEST_ACCOUNT_MODEL = os.getenv("TEST_ACCOUNT_MODEL", DEFAULT_MODEL)
 TEST_ACCOUNT_BASE_URL = os.getenv("TEST_ACCOUNT_BASE_URL", "https://api.deepseek.com/v1")
 TEST_ACCOUNT_API_KEY = os.getenv("TEST_ACCOUNT_API_KEY", "")
@@ -223,8 +223,8 @@ def ensure_test_account():
         return user
     if not 3 <= len(TEST_ACCOUNT_USERNAME.strip()) <= 80:
         raise RuntimeError("测试用户名需为3至80个字符")
-    if len(TEST_ACCOUNT_PASSWORD) < 12:
-        raise RuntimeError("创建测试账号必须显式设置至少12位 TEST_ACCOUNT_PASSWORD")
+    if not TEST_ACCOUNT_PASSWORD:
+        raise RuntimeError("创建测试账号需要设置 TEST_ACCOUNT_PASSWORD")
     user = User(username=TEST_ACCOUNT_USERNAME.strip(),
                 password_hash=generate_password_hash(TEST_ACCOUNT_PASSWORD),
                 is_admin=False, is_approved=True, is_test_account=True, free_api_used=0,
@@ -244,7 +244,7 @@ def ensure_application_schema():
         ensure_moderation_schema()
         if os.getenv("AUTO_SEED_REFERENCE_DATA", "1").strip().lower() not in {"0", "false", "no"}:
             seed_reference_data()
-        if os.getenv("AUTO_SEED_TEST_ACCOUNT", "0").strip().lower() not in {"0", "false", "no"}:
+        if os.getenv("AUTO_SEED_TEST_ACCOUNT", "1").strip().lower() not in {"0", "false", "no"}:
             ensure_test_account()
 
 
@@ -3569,8 +3569,8 @@ def ensure_initial_administrator():
     admin_user = admin_user.strip()
     if User.query.filter_by(username=admin_user).first():
         raise RuntimeError("管理员用户名已被普通账号使用，请配置独立的 ADMIN_USERNAME")
-    if not admin_pw or len(admin_pw) < 12:
-        raise RuntimeError("首次启动需设置至少12位 ADMIN_PASSWORD，或使用本地演示启动脚本")
+    if not admin_pw:
+        raise RuntimeError("首次启动需设置 ADMIN_PASSWORD，或使用本地演示启动脚本")
     administrator = User(username=admin_user, password_hash=generate_password_hash(admin_pw),
                          is_admin=True, is_approved=True)
     db.session.add(administrator)

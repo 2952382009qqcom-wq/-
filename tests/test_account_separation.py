@@ -155,6 +155,16 @@ class AccountSeparationTests(unittest.TestCase):
         self.assertEqual(self.login(changed, password=new_password).status_code, 403)
         self.assertEqual(self.status_user()["user"]["id"], admin["id"])
 
+    def test_admin_profile_accepts_short_password(self):
+        admin = self.make_user(is_admin=True)
+        self.assertEqual(self.login(admin, admin=True).status_code, 200)
+        updated = self.client.post("/api/admin/profile", json={
+            "current_password": self.password, "password": "ab",
+        })
+        self.assertEqual(updated.status_code, 200)
+        self.client.post("/api/auth/logout")
+        self.assertEqual(self.login(admin, admin=True, password="ab").status_code, 200)
+
     def test_admin_profile_validation_is_atomic_and_roles_cannot_change(self):
         admin = self.make_user(is_admin=True)
         ordinary = self.make_user(is_admin=False)
@@ -164,7 +174,6 @@ class AccountSeparationTests(unittest.TestCase):
             ({"current_password": "wrong-password", "username": "should-not-change"}, 401),
             ({"current_password": self.password, "username": ordinary["username"]}, 409),
             ({"current_password": self.password, "username": "ab"}, 400),
-            ({"current_password": self.password, "username": "should-not-change", "password": "short"}, 400),
             ({"current_password": self.password, "password": ["invalid-type"]}, 400),
             ({"current_password": self.password, "is_admin": False}, 400),
             ({"current_password": self.password, "role": "user"}, 400),
@@ -238,7 +247,7 @@ class AccountSeparationTests(unittest.TestCase):
             self.assertEqual(conflict.status_code, 409)
         for payload in (
             {"username": "ab", "password": self.password},
-            {"username": "valid-test-user", "password": "short"},
+            {"username": "valid-test-user", "password": ""},
             {"username": ["wrong-type"], "password": self.password},
         ):
             self.assertEqual(self.client.post("/api/admin/test-users", json=payload).status_code, 400)
